@@ -23,25 +23,47 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 img { display: block; }
 [hidden] { display: none !important; }
 
-/* Palco = janela inteira (720×440). Margens largas para a aura não ser cortada. */
+/* Palco = janela inteira (760×500). Margens largas para a aura não ser cortada:
+   o blur dela espalha ~60 px além da pílula, e o maior painel tem 560×412. */
 #stage {
   --x: 296px; --w: 128px; --h: 30px; --r: 15px;
-  position: relative; width: 720px; height: 440px; margin: 0 auto;
+  position: relative; width: 760px; height: 500px; margin: 0 auto;
 }
 
 /* ------------------------------------------------------------ aura */
 /* Elemento separado com blur de GPU: bem mais suave que um box-shadow gigante */
+/* --ai: recuo lateral, --ah: recuo de baixo. Com a ilha aberta a aura recua
+   mais por dentro da pílula (que é opaca e a esconde): o brilho que sobra
+   cabe na janela em vez de ser cortado nas bordas. */
 #aura {
-  position: absolute; top: 8px; left: calc(var(--x) + 10px);
-  width: calc(var(--w) - 20px); height: var(--h); border-radius: var(--r);
+  --ai: 10px; --ah: 0px;
+  position: absolute; top: 8px; left: calc(var(--x) + var(--ai));
+  width: calc(var(--w) - 2 * var(--ai)); height: calc(var(--h) - var(--ah)); border-radius: var(--r);
   background: var(--glow);
   filter: blur(28px);
   opacity: 0;
   transition: opacity 0.7s var(--ease), background-color 0.7s ease;
   pointer-events: none;
 }
-/* intensidade vem das configurações (--aura-op); o padrão "sutil" é 0.32 */
-#aura.on { opacity: var(--aura-op, 0.32); }
+/* maior painel 560×412: brilho alcança ~72 px além da aura → 704 px de largura
+   e 488 px de altura, dentro da janela de 760×500 */
+#stage[data-mode="expanded"] #aura { --ai: 12px; --ah: 16px; }
+/* intensidade vem das configurações (--aura-op); "sutil" = 0.2 */
+#aura.on { opacity: var(--aura-op, 0.2); }
+
+/* Dithering: um degradê de alfa baixo tem poucos níveis em 8 bits e cada
+   nível vira um anel visível. Um grão finíssimo (±2 níveis) por cima,
+   mascarado no formato da aura e atrás da pílula, quebra os degraus. */
+#grain {
+  position: absolute; top: 0; left: calc(var(--x) - 70px);
+  width: calc(var(--w) + 140px); height: calc(var(--h) + 80px);
+  background-image: var(--grain-img);
+  -webkit-mask-image: radial-gradient(closest-side, #000 35%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 35%, transparent 100%);
+  opacity: 0; transition: opacity 0.7s var(--ease);
+  pointer-events: none;
+}
+#aura.on + #grain { opacity: 1; }
 
 /* ------------------------------------------------------------ pílula */
 .pill {
@@ -65,6 +87,9 @@ img { display: block; }
 }
 .pill[data-mode="expanded"][data-panel="media"].has-media::after { opacity: 0.3; }
 .pill.drag { box-shadow: inset 0 0 0 1.5px rgba(10, 132, 255, 0.9); }
+/* tela cheia com a opção "traço": só marca onde a ilha está, visível em fundo claro ou escuro */
+.pill[data-mode="peek"] { background: #3a3a3c; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+.pill[data-mode="peek"]::before { opacity: 0; }
 
 /* ------------------------------------------------------------ camadas */
 .layer {
@@ -176,7 +201,8 @@ circle { fill: none; stroke-linecap: round; }
 .pill[data-panel="wifi"]    .v-wifi,
 .pill[data-panel="battery"] .v-battery,
 .pill[data-panel="clock"]   .v-clock,
-.pill[data-panel="settings"] .v-settings {
+.pill[data-panel="settings"] .v-settings,
+.pill[data-panel="user"]    .v-user {
   opacity: 1; transform: none; filter: none; pointer-events: auto; visibility: visible;
   transition: opacity .3s ease .08s, transform .45s var(--ease) .04s, filter .3s ease .05s, visibility 0s;
 }
@@ -389,7 +415,7 @@ circle { fill: none; stroke-linecap: round; }
 .seg button { flex: 1; height: 30px; border-radius: 9px; font-size: 12px; font-weight: 600; color: var(--dim); text-align: center; position: relative; z-index: 1; transition: color .25s; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .seg button svg { width: 13px; height: 13px; }
 .seg button.on { color: #000; }
-.seg .thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 9px; background: #fff; transition: transform .45s var(--ease); }
+.seg .thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / var(--n, 3)); border-radius: 9px; background: #fff; transition: transform .45s var(--ease); }
 .seg.disabled { opacity: .45; pointer-events: none; }
 .plans { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .b-foot { display: flex; gap: 8px; }
@@ -399,6 +425,31 @@ circle { fill: none; stroke-linecap: round; }
 .sw.on { background: #ffd60a; }
 .sw.on::after { transform: translateX(12px); }
 .sw.g.on { background: var(--green); }
+
+/* usuário: avatar no cabeçalho + painel com energia */
+.user-st { padding: 0 4px; }
+.avatar {
+  border-radius: 50%; overflow: hidden; flex: none; display: grid; place-items: center;
+  background: linear-gradient(135deg, #5e5ce6, #bf5af2); color: #fff; font-weight: 650;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.user-st .avatar { width: 20px; height: 20px; font-size: 10.5px; }
+.u-top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.u-top .avatar { width: 60px; height: 60px; font-size: 25px; box-shadow: 0 0 0 2px rgba(255,255,255,.12); }
+.u-name { font-size: 17px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.u-login { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.u-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.u-btn {
+  height: 62px; border-radius: 16px; background: var(--card);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+  font-size: 11.5px; color: var(--dim); transition: background .2s, color .2s, transform .2s var(--ease);
+}
+.u-btn svg { width: 19px; height: 19px; color: var(--txt); }
+.u-btn:hover { background: rgba(255,255,255,.1); color: var(--txt); }
+.u-btn:active { transform: scale(.95); }
+/* reiniciar/desligar pedem um segundo clique */
+.u-btn.armed { background: rgba(255,69,58,.22); color: #ff6961; }
+.u-btn.armed svg { color: #ff6961; }
 
 /* configurações */
 .v-settings { padding-bottom: 4px; }

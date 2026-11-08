@@ -7,7 +7,7 @@ mod sys;
 mod update;
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,6 +37,8 @@ struct Shared {
     zoom: Mutex<f64>,
     /// monitor escolhido nas configurações (`None` = principal)
     monitor: Mutex<Option<String>>,
+    /// em tela cheia: true = fica um traço (frontend), false = janela some
+    fs_peek: AtomicBool,
 }
 
 impl Shared {
@@ -52,8 +54,8 @@ struct SettingsState {
     file: std::path::PathBuf,
 }
 
-const BASE_W: f64 = 720.0;
-const BASE_H: f64 = 440.0;
+const BASE_W: f64 = 760.0;
+const BASE_H: f64 = 500.0;
 
 #[derive(Serialize, Clone)]
 struct Fast {
@@ -174,6 +176,17 @@ async fn enable_notifications(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn user_info() -> Result<platform::UserInfo, String> {
+    blocking(platform::user_info).await
+}
+
+/// Painel do usuário: "sleep" | "restart" | "shutdown".
+#[tauri::command]
+async fn power_action(action: String) -> Result<(), String> {
+    blocking(move || platform::power_action(&action)).await?
+}
+
+#[tauri::command]
 fn get_settings(state: tauri::State<'_, SettingsState>) -> settings::Settings {
     state.cur.lock().unwrap().clone()
 }
@@ -192,6 +205,7 @@ fn set_settings(
     let old = state.cur.lock().unwrap().clone();
     settings::save(&state.file, &s).map_err(|e| e.to_string())?;
     *state.cur.lock().unwrap() = s.clone();
+    shared.fs_peek.store(s.fullscreen == "peek", Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         if old.monitor != s.monitor {
             *shared.monitor.lock().unwrap() = s.monitor.clone();
@@ -207,7 +221,7 @@ fn set_settings(
 }
 
 /// Escala da ilha: a janela cresce e o WebView ganha o mesmo zoom, então a
-/// página continua vendo um palco de 720×440 px CSS.
+/// página continua vendo um palco de 760×500 px CSS.
 fn apply_scale(win: &WebviewWindow, shared: &Shared, scale: f64) {
     *shared.zoom.lock().unwrap() = scale;
     let _ = win.set_size(LogicalSize::new(BASE_W * scale, BASE_H * scale));
@@ -301,6 +315,7 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
         let mut last_fast: Option<(i32, bool, bool)> = None;
         let mut clip_seq = fast.clipboard_seq();
         let mut hidden = false;
+        let mut fs_last = false;
         let mut tick: u64 = 0;
         let _ = win.set_ignore_cursor_events(true);
 
@@ -357,12 +372,18 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 }
             }
 
-            // some em jogos/vídeos em tela cheia
+            // jogo/vídeo/apresentação em tela cheia: a janela some, ou (opção
+            // "peek") fica e o frontend reduz a pílula a um traço
             if tick % 30 == 0 {
                 let fs = fast.fullscreen();
-                if fs != hidden {
-                    hidden = fs;
-                    let _ = if fs { win.hide() } else { win.show() };
+                let want_hidden = fs && !shared.fs_peek.load(Ordering::Relaxed);
+                if want_hidden != hidden {
+                    hidden = want_hidden;
+                    let _ = if want_hidden { win.hide() } else { win.show() };
+                }
+                if fs != fs_last {
+                    fs_last = fs;
+                    let _ = app.emit("island:fullscreen", fs);
                 }
             }
 
@@ -572,7 +593,7 @@ fn main() {
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
-            list_monitors, pause_shortcuts, shortcuts::shortcut_errors
+            list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -580,6 +601,7 @@ fn main() {
             let file = settings::path(&app.path().app_config_dir()?);
             let prefs = settings::load(&file);
             *shared.monitor.lock().unwrap() = prefs.monitor.clone();
+            shared.fs_peek.store(prefs.fullscreen == "peek", Ordering::Relaxed);
             apply_scale(&win, &shared, prefs.scale);
             shortcuts::apply(app.handle(), &prefs.shortcuts);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });

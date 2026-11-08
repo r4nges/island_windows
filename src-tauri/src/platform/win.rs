@@ -589,3 +589,151 @@ fn describe(un: &UserNotification, id: u32) -> Option<NotifInfo> {
         time_ms,
     })
 }
+
+// ------------------------------------------------------------- usuário e energia
+use super::UserInfo;
+
+/// Nome completo (Configurações > Contas) e foto da conta.
+pub fn user_info() -> UserInfo {
+    let login = std::env::var("USERNAME").unwrap_or_default();
+    let name = user::full_name(&login).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| login.clone());
+    UserInfo { name, login, picture: user::account_picture() }
+}
+
+/// "sleep" | "restart" | "shutdown"
+pub fn power_action(action: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let args: &[&str] = match action {
+        "restart" => &["/r", "/t", "0"],
+        "shutdown" => &["/s", "/t", "0"],
+        "sleep" => {
+            // suspender (não hibernar): SetSuspendState(hibernate = false)
+            let ok = unsafe { windows::Win32::System::Power::SetSuspendState(false, false, false) };
+            return if ok { Ok(()) } else { Err("o Windows recusou a suspensão".into()) };
+        }
+        _ => return Err(format!("ação desconhecida: {action}")),
+    };
+    std::process::Command::new("shutdown")
+        .args(args)
+        .creation_flags(0x0800_0000) // sem janela de console
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+mod user {
+    use base64::Engine;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+    use windows::Win32::NetworkManagement::NetManagement::{NetApiBufferFree, NetUserGetInfo, USER_INFO_2};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// "Nome completo" da conta local (para conta Microsoft, o nome dela).
+    pub fn full_name(login: &str) -> Option<String> {
+        let wl = wide(login);
+        let mut buf: *mut u8 = std::ptr::null_mut();
+        let rc = unsafe { NetUserGetInfo(PCWSTR::null(), PCWSTR(wl.as_ptr()), 2, &mut buf) };
+        if rc != 0 || buf.is_null() {
+            return None;
+        }
+        let name = unsafe { (*(buf as *const USER_INFO_2)).usri2_full_name.to_string().ok() };
+        unsafe { NetApiBufferFree(Some(buf as _)) };
+        name
+    }
+
+    fn current_sid() -> Option<String> {
+        unsafe {
+            let mut tok = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok).ok()?;
+            let mut len = 0u32;
+            let _ = GetTokenInformation(tok, TokenUser, None, 0, &mut len);
+            let mut buf = vec![0u8; len as usize];
+            let r = GetTokenInformation(tok, TokenUser, Some(buf.as_mut_ptr() as _), len, &mut len);
+            let _ = CloseHandle(tok);
+            r.ok()?;
+            let tu = &*(buf.as_ptr() as *const TOKEN_USER);
+            let mut s = PWSTR::null();
+            ConvertSidToStringSidW(tu.User.Sid, &mut s).ok()?;
+            let out = s.to_string().ok();
+            let _ = LocalFree(Some(HLOCAL(s.0 as _)));
+            out
+        }
+    }
+
+    fn reg_hklm_string(key: &str, value: &str) -> Option<String> {
+        let (k, v) = (wide(key), wide(value));
+        let mut buf = vec![0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(k.as_ptr()),
+                PCWSTR(v.as_ptr()),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as _),
+                Some(&mut size),
+            )
+        };
+        if rc.is_err() {
+            return None;
+        }
+        let n = (size as usize / 2).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..n.min(buf.len())]))
+    }
+
+    fn data_url(b: &[u8]) -> String {
+        let mime = if b.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else if b.starts_with(b"BM") { "image/bmp" } else { "image/jpeg" };
+        format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(b))
+    }
+
+    /// JPEGs embutidos num .accountpicture-ms (vêm em 96 px e 448 px).
+    fn embedded_jpegs(b: &[u8]) -> Vec<&[u8]> {
+        let starts: Vec<usize> = b.windows(3).enumerate().filter(|(_, w)| *w == [0xFF, 0xD8, 0xFF]).map(|(i, _)| i).collect();
+        let mut out = Vec::new();
+        for (i, &s) in starts.iter().enumerate() {
+            let end_lim = starts.get(i + 1).copied().unwrap_or(b.len());
+            // último FFD9 antes do próximo início = fim deste JPEG
+            if let Some(e) = b[s..end_lim].windows(2).rposition(|w| w == [0xFF, 0xD9]) {
+                out.push(&b[s..s + e + 2]);
+            }
+        }
+        out
+    }
+
+    /// Foto da conta: 1) caminho registrado pela tela de Contas;
+    /// 2) cache da conta Microsoft em %APPDATA%. Sem foto: None (a UI usa a inicial).
+    pub fn account_picture() -> Option<String> {
+        if let Some(sid) = current_sid() {
+            let key = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\AccountPicture\Users\{sid}");
+            for v in ["Image448", "Image240", "Image192", "Image96"] {
+                if let Some(bytes) = reg_hklm_string(&key, v).and_then(|p| std::fs::read(p).ok()) {
+                    return Some(data_url(&bytes));
+                }
+            }
+        }
+        let dir = std::path::PathBuf::from(std::env::var("APPDATA").ok()?).join(r"Microsoft\Windows\AccountPictures");
+        let mut best: Option<Vec<u8>> = None;
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("accountpicture-ms")) {
+                continue;
+            }
+            if let Ok(b) = std::fs::read(&p) {
+                for img in embedded_jpegs(&b) {
+                    if best.as_ref().is_none_or(|x| img.len() > x.len()) {
+                        best = Some(img.to_vec());
+                    }
+                }
+            }
+        }
+        best.map(|b| data_url(&b))
+    }
+}

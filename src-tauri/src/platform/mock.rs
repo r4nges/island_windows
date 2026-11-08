@@ -125,3 +125,12 @@ impl Notifs {
         Vec::new()
     }
 }
+
+pub fn user_info() -> super::UserInfo {
+    let login = std::env::var("USER").unwrap_or_else(|_| "rangel".into());
+    super::UserInfo { name: "Rangel Macedo".into(), login, picture: None }
+}
+
+pub fn power_action(_action: &str) -> Result<(), String> {
+    Ok(())
+}

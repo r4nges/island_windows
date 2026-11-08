@@ -72,6 +72,15 @@ pub struct NotifInfo {
     pub time_ms: i64,
 }
 
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct UserInfo {
+    /// nome completo da conta (cai para o login se não houver)
+    pub name: String,
+    pub login: String,
+    /// foto da conta como data URL
+    pub picture: Option<String>,
+}
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

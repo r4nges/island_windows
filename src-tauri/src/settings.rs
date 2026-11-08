@@ -84,6 +84,8 @@ pub struct Settings {
     pub shortcuts: Shortcuts,
     /// apps cujas notificações não viram aviso na ilha (continuam na aba)
     pub muted_apps: Vec<String>,
+    /// app em tela cheia: "hide" (some) | "peek" (fica um traço no topo)
+    pub fullscreen: String,
 }
 
 impl Default for Settings {
@@ -95,6 +97,7 @@ impl Default for Settings {
             monitor: None,
             shortcuts: Shortcuts::default(),
             muted_apps: Vec::new(),
+            fullscreen: "hide".into(),
         }
     }
 }
@@ -124,6 +127,9 @@ impl Settings {
         self.muted_apps.retain(|a| !a.trim().is_empty());
         self.muted_apps.sort();
         self.muted_apps.dedup();
+        if self.fullscreen != "peek" {
+            self.fullscreen = "hide".into();
+        }
     }
 }
 
