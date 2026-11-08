@@ -94,7 +94,19 @@
     wifi: null,
     power: null,
     update: null, // { version, current, notes, progress: null | {pct} | "installing" }
+    cfg: null, // configurações (settings.json no Rust); null até carregar = padrão
+    pinned: false, // aberta pela bandeja/atalho: fica expandida até o mouse entrar e sair
   };
+
+  // padrão igual ao settings.rs; só vale até o Rust responder (e no modo demo)
+  const DEFAULT_CFG = {
+    modules: { volume: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true },
+    aura: { intensity: "subtle", expanded: false, color: "auto" },
+    scale: 1.0,
+  };
+  const cfg = () => S.cfg || DEFAULT_CFG;
+  /** aviso ligado nas configurações? */
+  const on = (k) => cfg().modules[k] !== false;
 
   // ------------------------------------------------------------ geometria + molas
   const STAGE_W = 720, TOP = 6;
@@ -126,7 +138,7 @@
   };
   const PANEL_SIZES = {
     cpu: [560, 300, 34], ram: [560, 300, 34], gpu: [560, 300, 34], net: [560, 300, 34],
-    wifi: [420, 344, 34], battery: [440, 300, 34], clock: [420, 412, 36],
+    wifi: [420, 344, 34], battery: [440, 300, 34], clock: [420, 412, 36], settings: [460, 408, 34],
   };
   const targetSize = (m) => (m === "expanded" && S.view ? PANEL_SIZES[S.view] : SIZES[m]);
 
@@ -172,7 +184,7 @@
   // ------------------------------------------------------------ modo / render
   let mode = "idle", sizeKey = "";
   function computeMode() {
-    if (S.hover || S.drag) return "expanded";
+    if (S.hover || S.drag || S.pinned) return "expanded";
     if (S.hud) return S.hud.kind;
     if (S.pomo.running) return "timer";
     if (S.media && S.media.playing) return "media";
@@ -199,22 +211,32 @@
     pill.classList.toggle("has-media", !!S.media);
     pill.classList.toggle("no-media", !S.media);
     pill.classList.toggle("break", S.pomo.phase === "break");
+    const a = cfg().aura;
     const glowOn =
-      !!S.media && (m === "media" || (m === "expanded" && pill.dataset.panel === "media") || (m === "toast" && S.hud?.glow));
+      a.intensity !== "off" &&
+      ((!!S.media && (m === "media" || (m === "expanded" && pill.dataset.panel === "media") || (m === "toast" && S.hud?.glow))) ||
+        (a.expanded && m === "expanded"));
     aura.classList.toggle("on", glowOn);
     ensureSpin();
     $$(".st").forEach((b) => b.classList.remove("on"));
+    if (S.view === "settings") $(".js-open-settings").classList.add("on");
     if (S.view === "wifi") $(".js-open-wifi").classList.add("on");
     if (S.view === "battery") $(".js-open-batt").classList.add("on");
     if (S.view === "clock") $(".js-open-clock").classList.add("on");
   }
 
   // ------------------------------------------------------------ hover
-  let hoverTimer = 0;
+  let hoverTimer = 0, pinEntered = false, pinTimer = 0;
   function setHover(v) {
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
       if (S.hover === v) return;
+      // aberta pela bandeja: só fecha depois que o mouse entrou e saiu
+      if (S.pinned) {
+        if (v) { pinEntered = true; clearTimeout(pinTimer); }
+        else if (!pinEntered) return;
+        else S.pinned = false;
+      }
       S.hover = v;
       if (v) {
         S.hud = null;
@@ -230,10 +252,25 @@
   pill.addEventListener("mouseleave", () => setHover(false));
   listen("island:hover", (v) => setHover(v));
 
+  /** Expande sem o mouse em cima (bandeja; depois, atalho global). Fecha quando
+   *  o mouse entra e sai, ou em 10 s se ele nem chegar. */
+  function pinOpen(view) {
+    S.pinned = true; pinEntered = S.hover;
+    S.hud = null; clearTimeout(hudTimer);
+    clearTimeout(pinTimer);
+    pinTimer = setTimeout(() => {
+      if (!S.pinned || pinEntered) return;
+      S.pinned = false; openView(null); render();
+    }, 10000);
+    refreshExpanded();
+    if (view !== undefined && S.view !== view) openView(view);
+    render();
+  }
+
   // ------------------------------------------------------------ HUD / toasts
   let hudTimer = 0;
   function hud(kind, ms, data = {}) {
-    if (S.hover || S.drag) return;
+    if (S.hover || S.drag || S.pinned) return;
     S.hud = { kind, ...data };
     if (kind === "toast") {
       $(".js-t-ico").innerHTML = data.img ? `<img src="${data.img}" alt="">` : data.icon || "";
@@ -257,7 +294,7 @@
     ["notif", I.bell, "Notificações"],
     ["shelf", I.tray, "Estante"],
   ];
-  const VIEW_TITLES = { cpu: "CPU", ram: "Memória", gpu: "GPU", net: "Rede", wifi: "Wi-Fi", battery: "Bateria", clock: "Relógio" };
+  const VIEW_TITLES = { cpu: "CPU", ram: "Memória", gpu: "GPU", net: "Rede", wifi: "Wi-Fi", battery: "Bateria", clock: "Relógio", settings: "Configurações" };
   $(".js-tabs").innerHTML = TABS.map(([id, ic, t]) => `<button class="tab" data-id="${id}" title="${t}">${ic}</button>`).join("");
   $$(".tab").forEach((b) =>
     b.addEventListener("click", () => { S.tab = b.dataset.id; save("island.tab", S.tab); refreshExpanded(); render(); })
@@ -280,8 +317,11 @@
     if (v === "clock") { calMonth = null; renderCalendar(); clockLoop(); }
     if (v === "wifi") { loadWifi(); wifiTimer = setInterval(loadWifi, 5000); }
     if (v === "battery") { loadPower(); powerTimer = setInterval(loadPower, 4000); }
+    if (v === "settings") renderSettings();
     render();
   }
+  $(".js-open-settings").innerHTML = I.gear;
+  $(".js-open-settings").addEventListener("click", () => openView("settings"));
   $(".js-open-wifi").addEventListener("click", () => openView("wifi"));
   $(".js-open-batt").addEventListener("click", () => openView("battery"));
   $(".js-open-clock").addEventListener("click", () => openView("clock"));
@@ -352,10 +392,15 @@
     img.onload = () => { S.color = dominant(img); applyAccent(); render(); };
     img.src = url;
   }
+  // cor da aura sem capa (modo automático com a ilha aberta e nada tocando)
+  const AURA_FALLBACK = "#5e5ce6";
+  const AURA_OPACITY = { off: 0, subtle: 0.32, medium: 0.5 };
   function applyAccent() {
     const c = `rgb(${S.color.join(",")})`;
+    const a = cfg().aura;
     stage.style.setProperty("--accent", c);
-    stage.style.setProperty("--glow", c);
+    stage.style.setProperty("--glow", a.color !== "auto" ? a.color : S.media && S.art ? c : AURA_FALLBACK);
+    stage.style.setProperty("--aura-op", AURA_OPACITY[a.intensity] ?? 0.32);
   }
   function dominant(img) {
     const c = document.createElement("canvas");
@@ -384,7 +429,7 @@
     if (!m) setArt("", false);
     else if (newTrack || !S.art) setArt(placeholderArt(m.app), false);
     renderMedia();
-    if (newTrack && m.playing && prev !== undefined) {
+    if (newTrack && m.playing && prev !== undefined && on("track")) {
       setTimeout(() => {
         if (S.media && S.media.title === m.title)
           hud("toast", 2600, {
@@ -442,7 +487,7 @@
     $(".js-caps").hidden = !f.caps;
     if (firstFast) { firstFast = false; return; }
     if (prev && f.caps !== prev.caps) {
-      hud("toast", 1500, {
+      if (on("caps")) hud("toast", 1500, {
         icon: I.caps, iconColor: f.caps ? "#ff9f0a" : "", title: f.caps ? "Caps Lock ativado" : "Caps Lock desativado",
         sub: "", acc: `<span class="dot ${f.caps ? "" : "off"}" style="${f.caps ? "background:#ff9f0a;box-shadow:0 0 10px #ff9f0a" : ""}"></span>`,
       });
@@ -454,7 +499,7 @@
       $(".js-vol-num").textContent = f.muted ? "—" : v;
       $(".js-vol-ico").innerHTML = f.muted || v === 0 ? I.vol0 : v < 50 ? I.vol1 : I.vol2;
       pill.classList.toggle("muted", f.muted);
-      hud("volume", 1400);
+      if (on("volume")) hud("volume", 1400);
     }
   }
   listen("island:fast", onFast);
@@ -476,7 +521,7 @@
     if (s.detail && S.view === s.detail.kind) renderDetail();
 
     if (firstSlow) { firstSlow = false; return; }
-    const b = s.battery, pb = prev && prev.battery;
+    const b = on("battery") && s.battery, pb = prev && prev.battery;
     if (b && pb && b.charging !== pb.charging) {
       hud("toast", 2200, {
         icon: I.bolt, iconBg: b.charging ? "rgba(48,209,88,.18)" : "", iconColor: b.charging ? "#30d158" : "",
@@ -487,7 +532,7 @@
       hud("toast", 3000, { icon: I.battery(b.percent, false), iconBg: "rgba(255,69,58,.18)", iconColor: "#ff453a", title: "Bateria fraca", sub: `Restam ${b.percent}%`, acc: "" });
     }
     const n = s.network, pn = prev && prev.network;
-    if (pn && n.online !== pn.online) {
+    if (pn && n.online !== pn.online && on("network")) {
       hud("toast", 2000, {
         icon: n.online ? (n.wifi ? I.wifi : I.lan) : I.wifiOff, iconColor: n.online ? "#0a84ff" : "#ff453a",
         iconBg: n.online ? "rgba(10,132,255,.16)" : "rgba(255,69,58,.16)",
@@ -823,6 +868,7 @@
   }
   setInterval(() => { if (S.pomo.running) renderPomo(); }, 250);
   function chime() {
+    if (!on("pomo_sound")) return;
     try {
       const ac = new AudioContext();
       [[880, 0], [1318.5, 0.16]].forEach(([f, t]) => {
@@ -848,6 +894,7 @@
     S.clips = [{ text, t: Date.now() }, ...S.clips.filter((c) => c.text !== text)].slice(0, 20);
     save("island.clips", S.clips);
     renderClips();
+    if (!on("clipboard")) return; // histórico continua; só o aviso some
     const one = text.replace(/\s+/g, " ").trim();
     hud("toast", 1600, {
       icon: I.clip, iconBg: "rgba(255,255,255,.1)", title: "Copiado",
@@ -879,6 +926,7 @@
     S.notifs = [n, ...S.notifs.filter((x) => x.id !== n.id)].slice(0, 30);
     save("island.notifs", S.notifs.map((x) => ({ ...x, icon: x.icon && x.icon.length < 40000 ? x.icon : null })));
     renderNotifs();
+    if (!on("notifications")) return; // continua na aba Notificações
     hud("toast", 4200, {
       img: n.icon || "", icon: n.icon ? "" : I.bell, iconBg: n.icon ? "" : "rgba(255,255,255,.1)",
       title: n.title || n.app, sub: n.body || n.app,
@@ -1005,6 +1053,103 @@
   // após "Recarregar visual" o aviso pendente continua valendo
   invoke("pending_update").then((u) => { if (u) { updToasted = u.version; onUpdate(u); } }).catch(() => {});
 
+  // ------------------------------------------------------------ configurações
+  // Painel dentro da ilha. Cada mudança vale na hora (aura, avisos) e é gravada
+  // pelo Rust em settings.json com um pequeno atraso (o slider de cor manda
+  // muitos eventos). A escala é aplicada pelo Rust: janela + zoom do WebView.
+  const AURA_LEVELS = [["off", "Desligada"], ["subtle", "Sutil"], ["medium", "Média"]];
+  const SCALE_OPTS = [[0.9, "90%"], [1.0, "100%"], [1.1, "110%"]];
+  const SWATCHES = ["auto", "#ffffff", "#0a84ff", "#bf5af2", "#ff375f", "#ff9f0a", "#30d158"];
+  const MODULE_LABELS = [
+    ["volume", "Volume"], ["caps", "Caps Lock"], ["battery", "Bateria e carregador"], ["network", "Internet caiu/voltou"],
+    ["track", "Nova música"], ["clipboard", "Texto copiado"], ["notifications", "Notificações"], ["pomo_sound", "Som do pomodoro"],
+  ];
+  const hueHex = (h) => {
+    // HSL(h, 90%, 62%) -> #rrggbb
+    const s = 0.9, l = 0.62, k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+    const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+    return "#" + [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, "0")).join("");
+  };
+  const hexHue = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    const mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+    if (!d) return 0;
+    const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return Math.round((h * 60 + 360) % 360);
+  };
+  let appVersion = DEMO ? "demo" : "";
+  if (T?.app?.getVersion) T.app.getVersion().then((v) => { appVersion = v; if (S.view === "settings") renderSettings(); }).catch(() => {});
+
+  const seg = (key, opts, cur) => {
+    const i = Math.max(0, opts.findIndex(([v]) => v === cur));
+    return `<div class="seg" data-seg="${key}"><span class="thumb" style="transform:translateX(${i * 100}%)"></span>${opts
+      .map(([v, l], j) => `<button data-v="${v}" class="${j === i ? "on" : ""}">${l}</button>`).join("")}</div>`;
+  };
+  const toggle = (key, label, onv) =>
+    `<button class="s-row" data-toggle="${key}"><span>${label}</span><span class="sw g ${onv ? "on" : ""}"></span></button>`;
+
+  function renderSettings() {
+    const c = cfg(), a = c.aura;
+    const custom = a.color !== "auto" && !SWATCHES.includes(a.color);
+    $(".js-settings").innerHTML = `
+      <div class="sec">Aura</div>
+      ${seg("aura.intensity", AURA_LEVELS, a.intensity)}
+      ${toggle("aura.expanded", "Aura com a ilha aberta", a.expanded)}
+      <div class="s-label">Cor</div>
+      <div class="swatches">${SWATCHES.map((s) =>
+        `<button class="swatch ${s === "auto" ? "auto" : ""} ${a.color === s ? "on" : ""}" data-color="${s}" title="${s === "auto" ? "Automática (cor da capa)" : s}" style="${s === "auto" ? "" : `--c:${s}`}"></button>`).join("")}
+        <button class="swatch custom ${custom ? "on" : ""}" data-color="custom" title="Personalizada" style="${custom ? `--c:${a.color}` : ""}"></button>
+      </div>
+      <input type="range" class="hue js-hue" min="0" max="359" value="${custom ? hexHue(a.color) : 210}" ${custom ? "" : "hidden"}>
+      <div class="sec">Tamanho da ilha</div>
+      ${seg("scale", SCALE_OPTS, c.scale)}
+      <div class="sec">Avisos na ilha</div>
+      <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)).join("")}</div>
+      <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
+  }
+
+  let cfgSaveTimer = 0;
+  function setCfg(path, value, { now = false, rerender = true } = {}) {
+    const c = structuredClone(cfg());
+    const [a, b] = path.split(".");
+    if (b) c[a][b] = value; else c[a] = value;
+    S.cfg = c;
+    applyAccent(); render();
+    if (rerender) renderSettings();
+    clearTimeout(cfgSaveTimer);
+    const send = () => invoke("set_settings", { settings: S.cfg }).then((saved) => { if (saved) S.cfg = saved; }).catch((e) => console.warn("set_settings", e));
+    if (now) send(); else cfgSaveTimer = setTimeout(send, 350);
+  }
+
+  $(".js-settings").addEventListener("click", (e) => {
+    const sb = e.target.closest(".seg button");
+    if (sb) {
+      const key = sb.closest(".seg").dataset.seg;
+      const v = key === "scale" ? +sb.dataset.v : sb.dataset.v;
+      return setCfg(key, v, { now: key === "scale" });
+    }
+    const t = e.target.closest("[data-toggle]");
+    if (t) {
+      const [a, b] = t.dataset.toggle.split(".");
+      return setCfg(t.dataset.toggle, !cfg()[a][b]);
+    }
+    const sw = e.target.closest("[data-color]");
+    if (sw) {
+      const v = sw.dataset.color;
+      return setCfg("aura.color", v === "custom" ? hueHex(+$(".js-hue").value) : v);
+    }
+    if (e.target.closest(".js-check-upd")) fire("check_update");
+  });
+  $(".js-settings").addEventListener("input", (e) => {
+    if (!e.target.classList.contains("js-hue")) return;
+    const hex = hueHex(+e.target.value);
+    $(".swatch.custom").style.setProperty("--c", hex);
+    setCfg("aura.color", hex, { rerender: false }); // re-render roubaria o arraste do slider
+  });
+
+  listen("island:open-settings", () => pinOpen("settings"));
+  invoke("get_settings").then((c) => { if (c) { S.cfg = c; applyAccent(); render(); } }).catch(() => {});
+
   // ------------------------------------------------------------ inicialização
   applyGeometry(...SIZES.idle);
   refreshExpanded();
@@ -1012,7 +1157,7 @@
   reportRect(SIZES.idle[0], SIZES.idle[1]);
 
   // ================================================================ DEMO
-  function demoInvoke(cmd) {
+  function demoInvoke(cmd, args) {
     const sleep = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));
     if (cmd === "wifi_list")
       return sleep(500, [
@@ -1032,6 +1177,8 @@
         mode: demoState.mode, saver: false, ac: demoState.charging, percent: 78, time_left: 3 * 3600 + 25 * 60,
       });
     if (cmd === "set_power_mode") return null;
+    if (cmd === "get_settings") return load("island.demo.cfg", null) || DEFAULT_CFG;
+    if (cmd === "set_settings") { save("island.demo.cfg", args.settings); document.body.style.zoom = args.settings.scale; return args.settings; }
     if (cmd === "pending_update") return new URLSearchParams(location.search).has("update") ? { version: "0.4.1", current: "0.4.0", notes: null } : null;
     return null;
   }
@@ -1112,6 +1259,7 @@
       if (k === "d") onDrop(["C:\\Users\\Rangel\\Desktop\\relatorio-notebooks.pdf", "C:\\Users\\Rangel\\Downloads\\inventario.xlsx", "C:\\fotos\\setup.png"]);
       if (k === "t") onNotif({ id: Date.now(), app: "WhatsApp", title: "Mãe", body: "Já chegou em casa?", icon: null, time_ms: Date.now() });
       if (k === "e") { S.hover = !S.hover; refreshExpanded(); render(); }
+      if (k === "s") pinOpen("settings"); // como o item "Configurações" da bandeja
       if (k === "u") { updToasted = ""; S.update = null; onUpdate({ version: "0.4.1", current: "0.4.0", notes: null }); }
     });
     // simula download e instalação; no fim "reinicia" (some o botão)
@@ -1134,6 +1282,7 @@
       S.hud = null; clearTimeout(hudTimer);
       if (q.get("tab")) S.tab = q.get("tab");
     }
+    document.body.style.zoom = cfg().scale; // no app quem faz isso é o zoom do WebView
     if (q.get("state") === "expanded") {
       S.hover = true; refreshExpanded();
       if (q.get("view")) { openView(q.get("view")); slowTick(); }

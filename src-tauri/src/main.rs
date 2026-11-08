@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod platform;
+mod settings;
 mod sys;
 mod update;
 
@@ -11,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, DragDropEvent, Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// Área da pílula, em px CSS relativos à janela. Fora dela os cliques
@@ -31,7 +32,25 @@ struct Shared {
     own_clip_seq: AtomicU32,
     /// painel de detalhe aberto no frontend ("cpu", "ram", "gpu", "net")
     detail: Mutex<Option<String>>,
+    /// zoom do WebView = escala da ilha (0 enquanto não carregou = 1.0)
+    zoom: Mutex<f64>,
 }
+
+impl Shared {
+    fn zoom(&self) -> f64 {
+        let z = *self.zoom.lock().unwrap();
+        if z > 0.0 { z } else { 1.0 }
+    }
+}
+
+/// Configurações carregadas + caminho do arquivo.
+struct SettingsState {
+    cur: Mutex<settings::Settings>,
+    file: std::path::PathBuf,
+}
+
+const BASE_W: f64 = 720.0;
+const BASE_H: f64 = 440.0;
 
 #[derive(Serialize, Clone)]
 struct Fast {
@@ -152,6 +171,47 @@ async fn enable_notifications(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_settings(state: tauri::State<'_, SettingsState>) -> settings::Settings {
+    state.cur.lock().unwrap().clone()
+}
+
+/// Grava as configurações do painel e aplica o que é do lado do Rust.
+/// Devolve a versão corrigida (`sanitize`) para o frontend usar.
+#[tauri::command]
+fn set_settings(
+    app: AppHandle,
+    state: tauri::State<'_, SettingsState>,
+    shared: tauri::State<'_, Arc<Shared>>,
+    settings: settings::Settings,
+) -> Result<settings::Settings, String> {
+    let mut s = settings;
+    s.sanitize();
+    let old_scale = state.cur.lock().unwrap().scale;
+    settings::save(&state.file, &s).map_err(|e| e.to_string())?;
+    *state.cur.lock().unwrap() = s.clone();
+    if (old_scale - s.scale).abs() > f64::EPSILON {
+        if let Some(w) = app.get_webview_window("main") {
+            apply_scale(&w, &shared, s.scale);
+        }
+    }
+    Ok(s)
+}
+
+/// Escala da ilha: a janela cresce e o WebView ganha o mesmo zoom, então a
+/// página continua vendo um palco de 720×440 px CSS.
+fn apply_scale(win: &WebviewWindow, shared: &Shared, scale: f64) {
+    *shared.zoom.lock().unwrap() = scale;
+    let _ = win.set_size(LogicalSize::new(BASE_W * scale, BASE_H * scale));
+    let _ = win.set_zoom(scale);
+    place_top_center(win);
+}
+
+#[tauri::command]
+fn check_update(app: AppHandle) {
+    update::tray_clicked(&app);
+}
+
+#[tauri::command]
 fn open_path(path: String) {
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(&path).spawn();
@@ -187,6 +247,9 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
             let inside = match (win.cursor_position(), win.outer_position(), win.scale_factor()) {
                 (Ok(c), Ok(p), Ok(s)) => {
                     let r = *shared.rect.lock().unwrap();
+                    // o rect vem em px CSS; com zoom do WebView (escala da ilha)
+                    // 1 px CSS = zoom px lógicos
+                    let s = s * shared.zoom();
                     let lx = (c.x - p.x as f64) / s;
                     let ly = (c.y - p.y as f64) / s;
                     let pad = 4.0;
@@ -381,10 +444,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let auto = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, autostart_on, None::<&str>)?;
     let center = MenuItem::with_id(app, "center", "Recentralizar", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "Recarregar visual", true, None::<&str>)?;
+    let prefs = MenuItem::with_id(app, "settings", "Configurações", true, None::<&str>)?;
     let upd = MenuItem::with_id(app, "update", "Procurar atualizações", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&auto, &center, &reload, &upd, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&prefs, &auto, &center, &reload, &upd, &sep, &quit])?;
     update::set_tray_item(app.handle(), upd);
 
     let auto_item = auto.clone();
@@ -405,6 +469,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             "update" => update::tray_clicked(app),
+            "settings" => {
+                let _ = app.emit("island:open-settings", ());
+            }
             "autostart" => {
                 let al = app.autolaunch();
                 let on = al.is_enabled().unwrap_or(false);
@@ -428,11 +495,16 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
-            update::pending_update, update::install_update
+            update::pending_update, update::install_update, check_update, get_settings, set_settings
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
-            place_top_center(&win);
+
+            let file = settings::path(&app.path().app_config_dir()?);
+            let prefs = settings::load(&file);
+            apply_scale(&win, &shared, prefs.scale);
+            app.manage(SettingsState { cur: Mutex::new(prefs), file });
+
             let _ = win.show();
 
             // arrastar arquivos para a pílula -> estante
