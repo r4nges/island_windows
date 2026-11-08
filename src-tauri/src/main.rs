@@ -315,7 +315,8 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
         let mut last_fast: Option<(i32, bool, bool)> = None;
         let mut clip_seq = fast.clipboard_seq();
         let mut hidden = false;
-        let mut fs_last = false;
+        let mut covered_last = false;
+        let own_hwnd = win.hwnd().map(|h| h.0 as isize).unwrap_or(0);
         let mut tick: u64 = 0;
         let _ = win.set_ignore_cursor_events(true);
 
@@ -372,18 +373,32 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 }
             }
 
-            // jogo/vídeo/apresentação em tela cheia: a janela some, ou (opção
-            // "peek") fica e o frontend reduz a pílula a um traço
-            if tick % 30 == 0 {
+            // app cobrindo a ilha (tela cheia, ou janela maximizada/grande por
+            // baixo dela, ex.: abas do navegador): a janela some, ou (opção
+            // "peek") fica e o frontend reduz a pílula a um traço. ~330 ms para
+            // reagir rápido a maximizar/Alt+Tab.
+            if tick % 10 == 0 {
                 let fs = fast.fullscreen();
-                let want_hidden = fs && !shared.fs_peek.load(Ordering::Relaxed);
+                let cov = match (win.outer_position(), win.outer_size(), win.scale_factor()) {
+                    (Ok(p), Ok(sz), Ok(sf)) => {
+                        // área da pílula compacta (com folga), em px físicos
+                        let k = sf * shared.zoom();
+                        let cx = p.x + sz.width as i32 / 2;
+                        let half = (170.0 * k) as i32;
+                        fast.covering(own_hwnd, (cx - half, p.y, cx + half, p.y + (44.0 * k) as i32))
+                    }
+                    _ => Some(false),
+                };
+                // None = a própria ilha em primeiro plano (clicaram nela): mantém
+                let covered = fs || cov.unwrap_or(covered_last);
+                let want_hidden = covered && !shared.fs_peek.load(Ordering::Relaxed);
                 if want_hidden != hidden {
                     hidden = want_hidden;
                     let _ = if want_hidden { win.hide() } else { win.show() };
                 }
-                if fs != fs_last {
-                    fs_last = fs;
-                    let _ = app.emit("island:fullscreen", fs);
+                if covered != covered_last {
+                    covered_last = covered;
+                    let _ = app.emit("island:covered", covered);
                 }
             }
 

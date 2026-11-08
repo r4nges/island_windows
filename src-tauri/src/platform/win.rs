@@ -199,6 +199,59 @@ impl Fast {
             }
         }
     }
+
+    /// A janela em primeiro plano passa por baixo da ilha e ocupa a maior
+    /// parte do monitor (maximizada ou ≥ 60%)? Ex.: navegador maximizado,
+    /// com as abas sob a pílula. `zone` = área da ilha em px físicos
+    /// (esq, topo, dir, base); `own` = HWND da própria ilha.
+    /// `None` quando a ilha está em primeiro plano (clicaram nela): mantém o estado.
+    pub fn covering(&self, own: isize, zone: (i32, i32, i32, i32)) -> Option<bool> {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
+        };
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.0.is_null() {
+                return Some(false);
+            }
+            if fg.0 as isize == own {
+                return None;
+            }
+            if !IsWindowVisible(fg).as_bool() || IsIconic(fg).as_bool() {
+                return Some(false);
+            }
+            // área de trabalho e barra de tarefas não contam
+            let mut cls = [0u16; 64];
+            let n = GetClassNameW(fg, &mut cls) as usize;
+            let cls = String::from_utf16_lossy(&cls[..n]);
+            if matches!(cls.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+                return Some(false);
+            }
+            let mut r = RECT::default();
+            if GetWindowRect(fg, &mut r).is_err() {
+                return Some(false);
+            }
+            let (zl, zt, zr, zb) = zone;
+            let under_island = r.left < zr && r.right > zl && r.top < zb && r.bottom > zt;
+            if !under_island {
+                return Some(false);
+            }
+            if IsZoomed(fg).as_bool() {
+                return Some(true);
+            }
+            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if !GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+                return Some(false);
+            }
+            let m = mi.rcMonitor;
+            let ix = (r.right.min(m.right) - r.left.max(m.left)).max(0) as i64;
+            let iy = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0) as i64;
+            let area = ((m.right - m.left) as i64) * ((m.bottom - m.top) as i64);
+            Some(area > 0 && ix * iy * 10 >= area * 6)
+        }
+    }
 }
 
 // ------------------------------------------------- Leituras lentas (~1 Hz)

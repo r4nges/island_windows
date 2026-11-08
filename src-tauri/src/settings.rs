@@ -84,7 +84,8 @@ pub struct Settings {
     pub shortcuts: Shortcuts,
     /// apps cujas notificações não viram aviso na ilha (continuam na aba)
     pub muted_apps: Vec<String>,
-    /// app em tela cheia: "hide" (some) | "peek" (fica um traço no topo)
+    /// app cobrindo a ilha (tela cheia ou janela maximizada por baixo dela):
+    /// "hide" (some) | "peek" (fica um traço no topo)
     pub fullscreen: String,
 }
 

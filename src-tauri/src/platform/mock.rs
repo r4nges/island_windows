@@ -54,6 +54,10 @@ impl Fast {
     pub fn fullscreen(&self) -> bool {
         false
     }
+
+    pub fn covering(&self, _own: isize, _zone: (i32, i32, i32, i32)) -> Option<bool> {
+        Some(false)
+    }
 }
 
 pub fn battery() -> Option<Battery> {

@@ -99,7 +99,7 @@
     update: null, // { version, current, notes, progress: null | {pct} | "installing" }
     cfg: null, // configurações (settings.json no Rust); null até carregar = padrão
     pinned: false, // aberta pela bandeja/atalho: fica expandida até o mouse entrar e sair
-    fullscreen: false, // app em tela cheia (com "esconder" a janela some; com "traço" vira peek)
+    fullscreen: false, // app cobrindo a ilha: tela cheia ou janela maximizada por baixo (com "esconder" a janela some; com "traço" vira peek)
     user: null, // { name, login, picture } do painel do usuário
   };
 
@@ -184,7 +184,7 @@
 
   let lastRect = "";
   function reportRect(w, h) {
-    const r = { x: (STAGE_W - w) / 2, y: TOP, w, h };
+    const r = { x: (STAGE_W - w) / 2, y: mode === "peek" ? 0 : TOP, w, h };
     const key = Object.values(r).map((n) => n.toFixed(0)).join(",");
     if (key === lastRect) return;
     lastRect = key;
@@ -212,8 +212,8 @@
       ex.style.setProperty("--lw", w + "px");
       ex.style.setProperty("--lh", h + "px");
     }
+    mode = m; // antes do animateTo: reportRect usa o modo (o traço fica colado no topo)
     if (key !== sizeKey) { sizeKey = key; animateTo(w, h, r); }
-    mode = m;
     pill.dataset.mode = m;
     stage.dataset.mode = m; // a aura (irmã da pílula) muda o recuo com a ilha aberta
     pill.dataset.panel = panel();
@@ -263,7 +263,7 @@
   pill.addEventListener("mouseenter", () => setHover(true));
   pill.addEventListener("mouseleave", () => setHover(false));
   listen("island:hover", (v) => setHover(v));
-  listen("island:fullscreen", (v) => {
+  listen("island:covered", (v) => {
     S.fullscreen = v;
     if (v) { S.hud = null; clearTimeout(hudTimer); }
     render();
@@ -1261,7 +1261,8 @@
       <input type="range" class="hue js-hue" min="0" max="359" value="${custom ? hexHue(a.color) : 210}" ${custom ? "" : "hidden"}>
       <div class="sec">Tamanho da ilha</div>
       ${seg("scale", SCALE_OPTS, c.scale)}
-      <div class="sec">App em tela cheia</div>
+      <div class="sec">App por baixo da ilha</div>
+      <div class="s-label">Tela cheia ou janela maximizada (ex.: as abas do navegador)</div>
       ${seg("fullscreen", FS_OPTS, c.fullscreen || "hide")}
       <div class="sec">Monitor</div>
       ${monitorChips(c.monitor)}
