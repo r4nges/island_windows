@@ -190,12 +190,17 @@ impl Fast {
         clipboard_seq()
     }
 
-    /// Jogo, vídeo em tela cheia ou apresentação em primeiro plano
-    pub fn fullscreen(&self) -> bool {
+    /// (algo em tela cheia, tela cheia exclusiva). Exclusiva = jogo D3D ou
+    /// apresentação: aí nada sobrepõe e a janela some de verdade. O resto
+    /// (vídeo, app sem borda em tela cheia) deixa a ilha "puxável".
+    pub fn fullscreen(&self) -> (bool, bool) {
         unsafe {
             match SHQueryUserNotificationState() {
-                Ok(s) => s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE,
-                Err(_) => false,
+                Ok(s) => {
+                    let exclusive = s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE;
+                    (exclusive || s == QUNS_BUSY, exclusive)
+                }
+                Err(_) => (false, false),
             }
         }
     }

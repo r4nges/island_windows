@@ -139,6 +139,7 @@
 
   const SIZES = {
     peek: [72, 5, 2.5],
+    hidden: [180, 3, 1.5], // invisível; a largura é a área de "puxar" no topo
     idle: [128, 30, 15],
     media: [280, 32, 16],
     timer: [260, 32, 16],
@@ -182,9 +183,11 @@
     if (!raf) { lastT = performance.now(); raf = requestAnimationFrame(frame); }
   }
 
+  // modos colados na borda de cima (app por baixo da ilha)
+  const AT_EDGE = ["peek", "hidden"];
   let lastRect = "";
   function reportRect(w, h) {
-    const r = { x: (STAGE_W - w) / 2, y: mode === "peek" ? 0 : TOP, w, h };
+    const r = { x: (STAGE_W - w) / 2, y: AT_EDGE.includes(mode) ? 0 : TOP, w, h };
     const key = Object.values(r).map((n) => n.toFixed(0)).join(",");
     if (key === lastRect) return;
     lastRect = key;
@@ -195,7 +198,9 @@
   let mode = "idle", sizeKey = "";
   function computeMode() {
     if (S.hover || S.drag || S.pinned) return "expanded";
-    if (S.fullscreen && cfg().fullscreen === "peek") return "peek"; // tela cheia: só um traço
+    // app por baixo da ilha: traço visível, ou escondida (invisível, mas com uma
+    // faixa no topo que puxa a ilha ao encostar o mouse)
+    if (S.fullscreen) return cfg().fullscreen === "peek" ? "peek" : "hidden";
     if (S.hud) return S.hud.kind;
     if (S.pomo.running) return "timer";
     if (S.media && S.media.playing) return "media";
@@ -238,9 +243,10 @@
   }
 
   // ------------------------------------------------------------ hover
-  let hoverTimer = 0, pinEntered = false, pinTimer = 0;
+  let hoverTimer = 0, pinEntered = false, pinTimer = 0, pullTimer = 0, pullReady = false;
   function setHover(v) {
     clearTimeout(hoverTimer);
+    if (!v) { clearTimeout(pullTimer); pullReady = false; }
     hoverTimer = setTimeout(() => {
       if (S.hover === v) return;
       // aberta pela bandeja: só fecha depois que o mouse entrou e saiu
@@ -249,8 +255,16 @@
         else if (!pinEntered) return;
         else S.pinned = false;
       }
+      // puxar da borda (traço/escondida) pede o mouse parado um pouco mais:
+      // quem mira nas abas do navegador passa por ali sem querer abrir
+      if (v && AT_EDGE.includes(mode) && !pullReady) {
+        pullTimer = setTimeout(() => { pullReady = true; setHover(true); }, 170); // +90 do hover ≈ 260 ms
+        return;
+      }
+      pullReady = false;
       S.hover = v;
       if (v) {
+        clearTimeout(pullTimer);
         S.hud = null;
         clearTimeout(hudTimer);
         refreshExpanded();

@@ -51,8 +51,8 @@ impl Fast {
     pub fn clipboard_seq(&self) -> u32 {
         0
     }
-    pub fn fullscreen(&self) -> bool {
-        false
+    pub fn fullscreen(&self) -> (bool, bool) {
+        (false, false)
     }
 
     pub fn covering(&self, _own: isize, _zone: (i32, i32, i32, i32)) -> Option<bool> {

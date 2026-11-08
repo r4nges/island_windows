@@ -7,7 +7,7 @@ mod sys;
 mod update;
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,8 +37,6 @@ struct Shared {
     zoom: Mutex<f64>,
     /// monitor escolhido nas configurações (`None` = principal)
     monitor: Mutex<Option<String>>,
-    /// em tela cheia: true = fica um traço (frontend), false = janela some
-    fs_peek: AtomicBool,
 }
 
 impl Shared {
@@ -205,7 +203,6 @@ fn set_settings(
     let old = state.cur.lock().unwrap().clone();
     settings::save(&state.file, &s).map_err(|e| e.to_string())?;
     *state.cur.lock().unwrap() = s.clone();
-    shared.fs_peek.store(s.fullscreen == "peek", Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         if old.monitor != s.monitor {
             *shared.monitor.lock().unwrap() = s.monitor.clone();
@@ -374,11 +371,12 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
             }
 
             // app cobrindo a ilha (tela cheia, ou janela maximizada/grande por
-            // baixo dela, ex.: abas do navegador): a janela some, ou (opção
-            // "peek") fica e o frontend reduz a pílula a um traço. ~330 ms para
-            // reagir rápido a maximizar/Alt+Tab.
+            // baixo dela, ex.: abas do navegador): o frontend esconde a pílula
+            // (fica uma faixa invisível no topo para puxá-la) ou a reduz a um
+            // traço. Só tela cheia exclusiva (jogo D3D, apresentação) some de
+            // verdade. ~330 ms para reagir rápido a maximizar/Alt+Tab.
             if tick % 10 == 0 {
-                let fs = fast.fullscreen();
+                let (fs, exclusive) = fast.fullscreen();
                 let cov = match (win.outer_position(), win.outer_size(), win.scale_factor()) {
                     (Ok(p), Ok(sz), Ok(sf)) => {
                         // área da pílula compacta (com folga), em px físicos
@@ -391,10 +389,9 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 };
                 // None = a própria ilha em primeiro plano (clicaram nela): mantém
                 let covered = fs || cov.unwrap_or(covered_last);
-                let want_hidden = covered && !shared.fs_peek.load(Ordering::Relaxed);
-                if want_hidden != hidden {
-                    hidden = want_hidden;
-                    let _ = if want_hidden { win.hide() } else { win.show() };
+                if exclusive != hidden {
+                    hidden = exclusive;
+                    let _ = if exclusive { win.hide() } else { win.show() };
                 }
                 if covered != covered_last {
                     covered_last = covered;
@@ -616,7 +613,6 @@ fn main() {
             let file = settings::path(&app.path().app_config_dir()?);
             let prefs = settings::load(&file);
             *shared.monitor.lock().unwrap() = prefs.monitor.clone();
-            shared.fs_peek.store(prefs.fullscreen == "peek", Ordering::Relaxed);
             apply_scale(&win, &shared, prefs.scale);
             shortcuts::apply(app.handle(), &prefs.shortcuts);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });

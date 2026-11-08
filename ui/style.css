@@ -91,6 +91,8 @@ img { display: block; }
    na borda de cima (invade o mínimo das abas do navegador), visível em fundo claro ou escuro */
 .pill[data-mode="peek"] { top: 0; border-radius: 0 0 3px 3px; background: #3a3a3c; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
 .pill[data-mode="peek"]::before { opacity: 0; }
+/* opção "esconder": invisível, mas continua ocupando a faixa do topo que puxa a ilha */
+.pill[data-mode="hidden"] { top: 0; opacity: 0; box-shadow: none; }
 
 /* ------------------------------------------------------------ camadas */
 .layer {
