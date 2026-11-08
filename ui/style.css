@@ -32,15 +32,15 @@ img { display: block; }
 /* ------------------------------------------------------------ aura */
 /* Elemento separado com blur de GPU: bem mais suave que um box-shadow gigante */
 #aura {
-  position: absolute; top: 4px; left: calc(var(--x) - 6px);
-  width: calc(var(--w) + 12px); height: calc(var(--h) + 10px); border-radius: calc(var(--r) + 6px);
+  position: absolute; top: 8px; left: calc(var(--x) + 10px);
+  width: calc(var(--w) - 20px); height: var(--h); border-radius: var(--r);
   background: var(--glow);
-  filter: blur(18px);
+  filter: blur(28px);
   opacity: 0;
   transition: opacity 0.7s var(--ease), background-color 0.7s ease;
   pointer-events: none;
 }
-#aura.on { opacity: 0.62; }
+#aura.on { opacity: 0.32; }
 
 /* ------------------------------------------------------------ pílula */
 .pill {
