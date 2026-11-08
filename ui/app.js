@@ -105,6 +105,7 @@
     scale: 1.0,
     monitor: null,
     shortcuts: { open: "Ctrl+Alt+KeyI", play: "Ctrl+Alt+Space", pomo: "Ctrl+Alt+KeyP" },
+    muted_apps: [],
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */
@@ -924,12 +925,16 @@
   listen("island:clip", onClip);
 
   // ------------------------------------------------------------ notificações
+  // apps que já notificaram (para a lista "silenciar por app"); vai além das 30 notificações guardadas
+  let notifApps = load("island.notifApps", []);
   function onNotif(n) {
     if (/island/i.test(n.app)) return;
     S.notifs = [n, ...S.notifs.filter((x) => x.id !== n.id)].slice(0, 30);
     save("island.notifs", S.notifs.map((x) => ({ ...x, icon: x.icon && x.icon.length < 40000 ? x.icon : null })));
+    if (n.app && !notifApps.includes(n.app)) { notifApps = [n.app, ...notifApps].slice(0, 40); save("island.notifApps", notifApps); }
     renderNotifs();
-    if (!on("notifications")) return; // continua na aba Notificações
+    // desligado geral ou app silenciado: continua na aba Notificações, sem aviso
+    if (!on("notifications") || cfg().muted_apps?.includes(n.app)) return;
     hud("toast", 4200, {
       img: n.icon || "", icon: n.icon ? "" : I.bell, iconBg: n.icon ? "" : "rgba(255,255,255,.1)",
       title: n.title || n.app, sub: n.body || n.app,
@@ -1163,6 +1168,17 @@
   }
   listen("island:shortcut", onShortcut);
 
+  // chave ligada = o app gera aviso; desligada = silenciado (só na aba Notificações)
+  function appMuteList(c) {
+    const muted = c.muted_apps || [];
+    const apps = [...new Set([...notifApps, ...muted])];
+    if (!apps.length) return `<div class="s-label">Os apps aparecem aqui depois da primeira notificação.</div>`;
+    const dis = c.modules.notifications === false ? " s-dis" : "";
+    return `<div class="s-grid${dis}">${apps.map((a) =>
+      `<button class="s-row" data-mute="${esc(a)}"><span class="s-app">${esc(a)}</span><span class="sw g ${muted.includes(a) ? "" : "on"}"></span></button>`).join("")}</div>
+      ${dis ? `<div class="s-label">Avisos de notificação estão desligados acima.</div>` : ""}`;
+  }
+
   function renderSettings() {
     const c = cfg(), a = c.aura;
     const custom = a.color !== "auto" && !SWATCHES.includes(a.color);
@@ -1184,6 +1200,8 @@
       ${SHORTCUTS.map(([k, l]) => shortcutRow(k, l, c.shortcuts?.[k] ?? "")).join("")}
       <div class="sec">Avisos na ilha</div>
       <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)).join("")}</div>
+      <div class="sec">Notificações por app</div>
+      ${appMuteList(c)}
       <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
   }
 
@@ -1224,6 +1242,11 @@
       window.focus(); // a janela nasce sem foco; o clique já ativa, isto garante
       fire("pause_shortcuts", { paused: true });
       return renderSettings();
+    }
+    const mu = e.target.closest("[data-mute]");
+    if (mu) {
+      const app = mu.dataset.mute, cur = cfg().muted_apps || [];
+      return setCfg("muted_apps", cur.includes(app) ? cur.filter((x) => x !== app) : [...cur, app]);
     }
     const clr = e.target.closest("[data-clear]");
     if (clr) { recording = clr.dataset.clear; return stopRecording(""); }

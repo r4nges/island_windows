@@ -82,6 +82,8 @@ pub struct Settings {
     /// nome do monitor (ex.: `\\.\DISPLAY2`); `None` = principal
     pub monitor: Option<String>,
     pub shortcuts: Shortcuts,
+    /// apps cujas notificações não viram aviso na ilha (continuam na aba)
+    pub muted_apps: Vec<String>,
 }
 
 impl Default for Settings {
@@ -92,6 +94,7 @@ impl Default for Settings {
             scale: 1.0,
             monitor: None,
             shortcuts: Shortcuts::default(),
+            muted_apps: Vec::new(),
         }
     }
 }
@@ -118,6 +121,9 @@ impl Settings {
         for s in [&mut self.shortcuts.open, &mut self.shortcuts.play, &mut self.shortcuts.pomo] {
             *s = s.trim().to_string();
         }
+        self.muted_apps.retain(|a| !a.trim().is_empty());
+        self.muted_apps.sort();
+        self.muted_apps.dedup();
     }
 }
 
