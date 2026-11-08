@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Island</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="stage">
+  <div id="pill" class="pill" data-mode="idle">
+
+    <!-- compacto: música tocando -->
+    <div class="layer l-media" style="--lw:280px;--lh:32px">
+      <img class="art art-sm js-art" alt="" />
+      <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+
+    <!-- compacto: pomodoro -->
+    <div class="layer l-timer" style="--lw:260px;--lh:32px">
+      <svg class="ring-sm" viewBox="0 0 20 20"><circle class="trk" cx="10" cy="10" r="8"/><circle class="val js-ring-sm" cx="10" cy="10" r="8"/></svg>
+      <span class="timer-txt js-timer-sm">25:00</span>
+    </div>
+
+    <!-- HUD: volume -->
+    <div class="layer l-volume" style="--lw:300px;--lh:38px">
+      <span class="ico js-vol-ico"></span>
+      <div class="bar"><div class="fill js-vol-fill"></div></div>
+      <span class="num js-vol-num">50</span>
+    </div>
+
+    <!-- HUD/toast genérico -->
+    <div class="layer l-toast" style="--lw:340px;--lh:54px">
+      <div class="t-ico js-t-ico"></div>
+      <div class="t-txt">
+        <div class="t-title js-t-title"></div>
+        <div class="t-sub js-t-sub"></div>
+      </div>
+      <div class="t-acc js-t-acc"></div>
+    </div>
+
+    <!-- expandido -->
+    <div class="layer l-expanded" style="--lw:480px;--lh:200px">
+      <header class="x-head">
+        <nav class="tabs js-tabs"></nav>
+        <div class="x-status">
+          <span class="js-caps caps" hidden>⇪</span>
+          <span class="js-net"></span>
+          <span class="js-batt"></span>
+          <span class="clock js-clock">--:--</span>
+        </div>
+      </header>
+
+      <section class="view v-media">
+        <div class="m-empty js-m-empty"><span class="big-ico"></span><p>Nada tocando agora</p><small>Spotify, YouTube e qualquer player do Windows aparecem aqui</small></div>
+        <div class="m-body js-m-body">
+          <img class="art art-lg js-art" alt="" />
+          <div class="m-info">
+            <div class="m-app js-m-app">Spotify</div>
+            <div class="m-title js-m-title">—</div>
+            <div class="m-artist js-m-artist">—</div>
+            <div class="m-progress">
+              <span class="js-m-pos">0:00</span>
+              <div class="bar"><div class="fill js-m-fill"></div></div>
+              <span class="js-m-dur">0:00</span>
+            </div>
+            <div class="m-ctrl">
+              <button class="btn js-prev" title="Anterior"></button>
+              <button class="btn btn-main js-play" title="Tocar/pausar"></button>
+              <button class="btn js-next" title="Próxima"></button>
+            </div>
+          </div>
+          <div class="eq eq-lg"><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </section>
+
+      <section class="view v-system">
+        <div class="tiles">
+          <div class="tile"><label>CPU</label><b class="js-cpu">0%</b><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-cpu-spark"/></svg></div>
+          <div class="tile"><label>RAM</label><b class="js-ram">0 GB</b><div class="mini"><div class="fill js-ram-fill"></div></div><small class="js-ram-sub"></small></div>
+          <div class="tile"><label>GPU</label><b class="js-gpu">—</b><div class="mini"><div class="fill js-gpu-fill"></div></div><small class="js-gpu-sub"></small></div>
+          <div class="tile"><label>Rede</label><b class="js-down">↓ 0</b><small class="js-up">↑ 0</small><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-net-spark"/></svg></div>
+        </div>
+      </section>
+
+      <section class="view v-focus">
+        <div class="f-ring">
+          <svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="44"/><circle class="val js-ring-lg" cx="50" cy="50" r="44"/></svg>
+          <div class="f-time"><b class="js-timer-lg">25:00</b><small class="js-phase">Foco</small></div>
+        </div>
+        <div class="f-side">
+          <div class="f-btns">
+            <button class="pillbtn primary js-pomo-toggle">Iniciar</button>
+            <button class="pillbtn js-pomo-reset">Zerar</button>
+          </div>
+          <div class="f-presets js-presets"></div>
+          <small class="f-hint js-pomo-count">0 ciclos hoje</small>
+        </div>
+      </section>
+
+      <section class="view v-clip">
+        <ul class="clips js-clips"></ul>
+        <div class="empty js-clip-empty">Copie qualquer texto e ele aparece aqui.<br><small>Clique para copiar de novo.</small></div>
+      </section>
+
+      <section class="view v-shelf">
+        <div class="shelf js-shelf"></div>
+        <div class="drop js-drop"><span class="big-ico"></span>Arraste arquivos até a ilha<small>ficam guardados aqui até você tirar</small></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div id="demo-hint" hidden>
+  <b>Modo demo</b> · passe o mouse na ilha ·
+  <kbd>V</kbd> volume · <kbd>C</kbd> clipboard · <kbd>B</kbd> carregador · <kbd>K</kbd> Caps Lock ·
+  <kbd>W</kbd> Wi-Fi · <kbd>N</kbd> próxima música · <kbd>P</kbd> pomodoro · <kbd>Espaço</kbd> play/pause
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
