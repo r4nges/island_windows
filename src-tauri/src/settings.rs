@@ -54,6 +54,24 @@ impl Default for Aura {
     }
 }
 
+/// Atalhos globais no formato do global-hotkey (`Ctrl+Alt+KeyI`); vazio = desligado.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Shortcuts {
+    /// abrir/fechar a ilha
+    pub open: String,
+    /// tocar/pausar a mídia
+    pub play: String,
+    /// iniciar/pausar o pomodoro
+    pub pomo: String,
+}
+
+impl Default for Shortcuts {
+    fn default() -> Self {
+        Self { open: "Ctrl+Alt+KeyI".into(), play: "Ctrl+Alt+Space".into(), pomo: "Ctrl+Alt+KeyP".into() }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -63,11 +81,18 @@ pub struct Settings {
     pub scale: f64,
     /// nome do monitor (ex.: `\\.\DISPLAY2`); `None` = principal
     pub monitor: Option<String>,
+    pub shortcuts: Shortcuts,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { modules: Modules::default(), aura: Aura::default(), scale: 1.0, monitor: None }
+        Self {
+            modules: Modules::default(),
+            aura: Aura::default(),
+            scale: 1.0,
+            monitor: None,
+            shortcuts: Shortcuts::default(),
+        }
     }
 }
 
@@ -89,6 +114,9 @@ impl Settings {
         let hex_ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
         if c != "auto" && !hex_ok {
             self.aura.color = "auto".into();
+        }
+        for s in [&mut self.shortcuts.open, &mut self.shortcuts.play, &mut self.shortcuts.pomo] {
+            *s = s.trim().to_string();
         }
     }
 }

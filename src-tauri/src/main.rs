@@ -2,6 +2,7 @@
 
 mod platform;
 mod settings;
+mod shortcuts;
 mod sys;
 mod update;
 
@@ -200,6 +201,8 @@ fn set_settings(
             apply_scale(&w, &shared, s.scale);
         }
     }
+    // sempre: também retoma os atalhos depois de uma gravação no painel
+    shortcuts::apply(&app, &s.shortcuts);
     Ok(s)
 }
 
@@ -232,6 +235,18 @@ fn list_monitors(app: AppHandle) -> Vec<MonitorInfo> {
             Some(MonitorInfo { primary: primary.as_ref() == Some(&id), width: m.size().width, height: m.size().height, id })
         })
         .collect()
+}
+
+/// Painel gravando uma combinação: solta os atalhos para a tecla chegar à
+/// página; ao cancelar, registra de novo os que estão salvos.
+#[tauri::command]
+fn pause_shortcuts(app: AppHandle, state: tauri::State<'_, SettingsState>, paused: bool) {
+    if paused {
+        shortcuts::pause(&app);
+    } else {
+        let s = state.cur.lock().unwrap().shortcuts.clone();
+        shortcuts::apply(&app, &s);
+    }
 }
 
 #[tauri::command]
@@ -549,13 +564,15 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(shortcuts::plugin())
         .manage(shared.clone())
         .manage(update::Updates::default())
+        .manage(shortcuts::Bindings::default())
         .invoke_handler(tauri::generate_handler![
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
-            list_monitors
+            list_monitors, pause_shortcuts, shortcuts::shortcut_errors
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -564,6 +581,7 @@ fn main() {
             let prefs = settings::load(&file);
             *shared.monitor.lock().unwrap() = prefs.monitor.clone();
             apply_scale(&win, &shared, prefs.scale);
+            shortcuts::apply(app.handle(), &prefs.shortcuts);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });
 
             let _ = win.show();

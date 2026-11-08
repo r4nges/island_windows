@@ -104,6 +104,7 @@
     aura: { intensity: "subtle", expanded: false, color: "auto" },
     scale: 1.0,
     monitor: null,
+    shortcuts: { open: "Ctrl+Alt+KeyI", play: "Ctrl+Alt+Space", pomo: "Ctrl+Alt+KeyP" },
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */
@@ -318,7 +319,8 @@
     if (v === "clock") { calMonth = null; renderCalendar(); clockLoop(); }
     if (v === "wifi") { loadWifi(); wifiTimer = setInterval(loadWifi, 5000); }
     if (v === "battery") { loadPower(); powerTimer = setInterval(loadPower, 4000); }
-    if (v === "settings") { renderSettings(); loadMonitors(); }
+    if (recording && v !== "settings") stopRecording(); // saiu do painel no meio da gravação
+    if (v === "settings") { renderSettings(); loadMonitors(); loadShortcutErrs(); }
     render();
   }
   $(".js-open-settings").innerHTML = I.gear;
@@ -1106,6 +1108,61 @@
     </div>${missing ? `<div class="s-label">O monitor escolhido está desconectado; a ilha voltou para o principal.</div>` : ""}`;
   }
 
+  // ---- atalhos globais: formato do global-hotkey ("Ctrl+Alt+KeyI") = KeyboardEvent.code
+  const SHORTCUTS = [["open", "Abrir a ilha"], ["play", "Tocar/pausar"], ["pomo", "Pomodoro"]];
+  // só nomes que não dependem do layout (no ABNT2 os símbolos mudam de lugar)
+  const KEY_NAMES = { Space: "Espaço", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
+  const prettyKey = (acc) =>
+    acc.split("+").map((t) => t === "Super" ? "Win" : KEY_NAMES[t] || t.replace(/^Key/, "").replace(/^Digit/, "").replace(/^Numpad/, "Num ")).join(" + ");
+  let recording = null; // ação sendo gravada
+  let shortcutErrs = {};
+  function shortcutRow(k, label, acc) {
+    const rec = recording === k;
+    const err = shortcutErrs[k];
+    return `<div class="s-row s-key"><span>${label}${err ? `<small class="s-err">Não registrou: combinação em uso ou inválida</small>` : ""}</span>
+      <span class="keys"><button class="keycap ${rec ? "rec" : ""} ${acc ? "" : "none"}" data-rec="${k}">${rec ? "Pressione as teclas…" : acc ? esc(prettyKey(acc)) : "Nenhum"}</button>${acc && !rec ? `<button class="key-x" data-clear="${k}" title="Remover">×</button>` : ""}</span></div>`;
+  }
+  function loadShortcutErrs() {
+    invoke("shortcut_errors").then((e) => { shortcutErrs = e || {}; if (S.view === "settings") renderSettings(); }).catch(() => {});
+  }
+  function stopRecording(acc) {
+    const k = recording;
+    recording = null;
+    if (acc !== undefined) {
+      // set_settings já registra os atalhos de novo
+      setCfg("shortcuts", { ...cfg().shortcuts, [k]: acc }, { now: true });
+      setTimeout(loadShortcutErrs, 300);
+    } else {
+      fire("pause_shortcuts", { paused: false });
+      renderSettings();
+    }
+  }
+  const MOD_CODES = /^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/;
+  window.addEventListener("keydown", (e) => {
+    if (!recording) return;
+    e.preventDefault(); e.stopImmediatePropagation(); // não deixa outros handlers verem a tecla
+    if (e.code === "Escape") return stopRecording();
+    if (e.code === "Backspace" || e.code === "Delete") return stopRecording("");
+    if (MOD_CODES.test(e.code)) return; // esperando a tecla principal
+    const fkey = /^F\d{1,2}$/.test(e.code);
+    if (!(e.ctrlKey || e.altKey || e.metaKey) && !fkey) return; // precisa de Ctrl/Alt/Win (ou F1–F24)
+    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+    stopRecording([...mods, e.code].join("+"));
+  }, true);
+
+  function onShortcut(action) {
+    if (action === "open") {
+      if (S.pinned) { S.pinned = false; openView(null); render(); }
+      else if (!S.hover) pinOpen();
+    } else if (action === "play") {
+      $(".js-play").click();
+    } else if (action === "pomo") {
+      pomoToggle();
+      if (!S.pomo.running) hud("toast", 1600, { icon: I.timer, iconBg: "rgba(255,159,10,.18)", iconColor: "#ff9f0a", title: "Pomodoro pausado", sub: fmt(Math.ceil(S.pomo.left)), acc: "" });
+    }
+  }
+  listen("island:shortcut", onShortcut);
+
   function renderSettings() {
     const c = cfg(), a = c.aura;
     const custom = a.color !== "auto" && !SWATCHES.includes(a.color);
@@ -1123,6 +1180,8 @@
       ${seg("scale", SCALE_OPTS, c.scale)}
       <div class="sec">Monitor</div>
       ${monitorChips(c.monitor)}
+      <div class="sec">Atalhos</div>
+      ${SHORTCUTS.map(([k, l]) => shortcutRow(k, l, c.shortcuts?.[k] ?? "")).join("")}
       <div class="sec">Avisos na ilha</div>
       <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)).join("")}</div>
       <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
@@ -1158,6 +1217,16 @@
       const v = sw.dataset.color;
       return setCfg("aura.color", v === "custom" ? hueHex(+$(".js-hue").value) : v);
     }
+    const rec = e.target.closest("[data-rec]");
+    if (rec) {
+      if (recording === rec.dataset.rec) return stopRecording();
+      recording = rec.dataset.rec;
+      window.focus(); // a janela nasce sem foco; o clique já ativa, isto garante
+      fire("pause_shortcuts", { paused: true });
+      return renderSettings();
+    }
+    const clr = e.target.closest("[data-clear]");
+    if (clr) { recording = clr.dataset.clear; return stopRecording(""); }
     const mon = e.target.closest("[data-monitor]");
     if (mon) return setCfg("monitor", mon.dataset.monitor || null, { now: true });
     if (e.target.closest(".js-check-upd")) fire("check_update");
@@ -1283,7 +1352,9 @@
       if (k === "d") onDrop(["C:\\Users\\Rangel\\Desktop\\relatorio-notebooks.pdf", "C:\\Users\\Rangel\\Downloads\\inventario.xlsx", "C:\\fotos\\setup.png"]);
       if (k === "t") onNotif({ id: Date.now(), app: "WhatsApp", title: "Mãe", body: "Já chegou em casa?", icon: null, time_ms: Date.now() });
       if (k === "e") { S.hover = !S.hover; refreshExpanded(); render(); }
+      if (recording) return; // gravando um atalho no painel
       if (k === "s") pinOpen("settings"); // como o item "Configurações" da bandeja
+      if (k === "o") onShortcut("open"); // como o atalho global de abrir
       if (k === "u") { updToasted = ""; S.update = null; onUpdate({ version: "0.4.1", current: "0.4.0", notes: null }); }
     });
     // simula download e instalação; no fim "reinicia" (some o botão)
