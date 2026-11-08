@@ -1,6 +1,6 @@
 //! Dados simulados para rodar fora do Windows.
 
-use super::{Battery, MediaInfo, Network, PowerInfo, PowerPlan, WifiNet};
+use super::{Battery, MediaInfo, Network, NotifInfo, PowerInfo, PowerPlan, WifiNet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
@@ -104,4 +104,24 @@ pub fn set_power_plan(_guid: &str) -> Result<(), String> {
 
 pub fn set_power_mode(_mode: &str) -> Result<(), String> {
     Ok(())
+}
+
+#[allow(dead_code)]
+pub fn has_identity() -> bool {
+    false
+}
+
+pub fn notif_access(_request: bool) -> String {
+    "noidentity".into()
+}
+
+pub struct Notifs;
+
+impl Notifs {
+    pub fn new() -> Option<Self> {
+        None
+    }
+    pub fn poll(&mut self) -> Vec<NotifInfo> {
+        Vec::new()
+    }
 }

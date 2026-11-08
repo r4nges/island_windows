@@ -4,7 +4,8 @@ Dynamic Island para Windows: uma pílula preta no topo da tela que se transforma
 
 | Estado | Quando aparece |
 |---|---|
-| Mídia | música tocando (Spotify, YouTube no navegador, qualquer player do Windows): capa + equalizador na cor da capa |
+| Mídia | música tocando (Spotify, YouTube no navegador, qualquer player do Windows): vinil girando com a capa no rótulo + equalizador na cor da capa |
+| Notificações | notificações de outros apps (WhatsApp, Teams, Outlook…) aparecem na ilha e ficam na aba Notificações |
 | Nova faixa | anúncio de 2,5 s com capa, título e artista |
 | Volume | ao mudar o volume ou o mudo |
 | Toasts | Caps Lock, carregador conectado/desconectado, bateria fraca (20/10/5%), internet caiu/voltou, texto copiado |
@@ -51,13 +52,22 @@ Teclas: `V` volume, `M` mudo, `K` Caps Lock, `C` copiar, `B` carregador, `W` Wi-
 - `src-tauri/src/platform/win.rs`: leitura das APIs do Windows.
 - `src-tauri/src/main.rs`: frequência de leitura e eventos.
 
+## Notificações de outros apps
+
+O Windows só entrega notificações de outros apps a programas com **identidade de pacote**. O Island usa um *pacote esparso* (`src-tauri/msix/AppxManifest.xml`): o instalador NSIS continua igual e, ao final, registra essa identidade apontando para a pasta instalada.
+
+1. Ligue o **Modo de Desenvolvedor**: Configurações → Sistema → Para desenvolvedores (necessário porque o pacote não é assinado).
+2. Instale (ou reinstale) o Island. Se o Modo de Desenvolvedor estava desligado na instalação, abra a aba Notificações e clique em **Ativar**: o Island registra e reinicia sozinho.
+3. Na primeira vez, permita o acesso em Configurações → Privacidade → Notificações.
+
+Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configurações → Sistema → Notificações e deixe só “Mostrar na central de notificações”; a ilha continua recebendo.
+
 ## Limitações conhecidas
 
 - **Lista de Wi-Fi no Windows 11 24H2+** exige a permissão de Localização para apps de desktop (Configurações → Privacidade → Localização). A ilha avisa e abre a tela certa.
 - **Economia de energia** não tem API pública para ligar/desligar; o botão abre a página do Windows. O modo de energia só tem efeito com o plano Equilibrado ativo.
 - **VRAM por processo** não é informada pelo driver NVIDIA no Windows (modo WDDM), por isso aparece “—”.
 
-- **Notificações de outros apps** (WhatsApp, Teams…) não aparecem: a API do Windows para lê-las exige app empacotado em MSIX com identidade. Fica para uma v2.
 - O **OSD de volume nativo** do Windows continua aparecendo junto do HUD da ilha.
 - **Brilho** não é monitorado.
 - GPU só NVIDIA (via NVML); sem placa NVIDIA o card mostra “—”.

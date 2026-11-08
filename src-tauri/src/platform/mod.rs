@@ -61,6 +61,17 @@ pub struct PowerInfo {
     pub time_left: Option<u32>,
 }
 
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct NotifInfo {
+    pub id: u32,
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    /// ícone do app como data URL
+    pub icon: Option<String>,
+    pub time_ms: i64,
+}
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

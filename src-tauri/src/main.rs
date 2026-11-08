@@ -118,6 +118,38 @@ fn open_uri(uri: String) {
     }
 }
 
+/// Registra o pacote esparso (identidade) e reinicia o app para ela valer.
+#[tauri::command]
+async fn enable_notifications(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let manifest = dir.join("AppxManifest.xml");
+    if !manifest.exists() {
+        return Err(format!("AppxManifest.xml não encontrado em {}", dir.display()));
+    }
+    let cmd = format!(
+        "Add-AppxPackage -Register '{}' -ExternalLocation '{}' -ForceUpdateFromAnyVersion",
+        manifest.display(),
+        dir.display()
+    );
+    let out = blocking(move || {
+        let mut c = std::process::Command::new("powershell");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &cmd]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000); // sem janela de console
+        }
+        c.output()
+    })
+    .await?
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { "falha ao registrar o pacote".into() } else { err });
+    }
+    app.restart();
+}
+
 #[tauri::command]
 fn open_path(path: String) {
     #[cfg(windows)]
@@ -292,6 +324,38 @@ fn spawn_slow(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
+/// Notificações de outros apps (precisa de identidade de pacote).
+fn spawn_notifs(app: AppHandle) {
+    thread::spawn(move || {
+        platform::init_thread();
+        // dá tempo do frontend carregar antes do primeiro status
+        thread::sleep(Duration::from_secs(2));
+        let mut status = platform::notif_access(true);
+        let _ = app.emit("island:notif-status", &status);
+        loop {
+            if status != "allowed" {
+                thread::sleep(Duration::from_secs(5));
+                let st = platform::notif_access(false);
+                if st != status {
+                    status = st;
+                    let _ = app.emit("island:notif-status", &status);
+                }
+                continue;
+            }
+            let Some(mut n) = platform::Notifs::new() else {
+                status = "error".into();
+                continue;
+            };
+            loop {
+                for info in n.poll() {
+                    let _ = app.emit("island:notif", info);
+                }
+                thread::sleep(Duration::from_millis(900));
+            }
+        }
+    });
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let auto = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, autostart_on, None::<&str>)?;
@@ -338,7 +402,7 @@ fn main() {
         .manage(shared.clone())
         .invoke_handler(tauri::generate_handler![
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
-            power_info, set_power_plan, set_power_mode, open_uri
+            power_info, set_power_plan, set_power_mode, open_uri, enable_notifications
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -366,6 +430,7 @@ fn main() {
             spawn_fast(app.handle().clone(), win, shared.clone());
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
+            spawn_notifs(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

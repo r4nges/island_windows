@@ -13,7 +13,7 @@
 
     <!-- compacto: música tocando -->
     <div class="layer l-media" style="--lw:280px;--lh:32px">
-      <img class="art art-sm js-art" alt="" />
+      <div class="disc disc-sm"><div class="spin grooves"><div class="label js-label"></div></div><div class="sheen"></div></div>
       <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
     </div>
 
@@ -57,7 +57,7 @@
       <section class="view v-media">
         <div class="m-empty"><span class="big-ico js-ico-music"></span><p>Nada tocando agora</p><small>Spotify, YouTube e qualquer player do Windows aparecem aqui</small></div>
         <div class="m-body">
-          <img class="art art-lg js-art" alt="" />
+          <div class="disc disc-lg"><div class="spin grooves"><div class="label js-label"></div></div><div class="sheen"></div></div>
           <div class="m-info">
             <div class="m-app js-m-app">Spotify</div>
             <div class="m-title js-m-title">—</div>
@@ -104,6 +104,11 @@
       <section class="view v-clip">
         <ul class="clips js-clips"></ul>
         <div class="empty">Copie qualquer texto e ele aparece aqui.<br><small>Clique para copiar de novo.</small></div>
+      </section>
+
+      <section class="view v-notif">
+        <div class="js-notif-setup"></div>
+        <ul class="clips notifs js-notifs"></ul>
       </section>
 
       <section class="view v-shelf">

@@ -83,7 +83,7 @@ img { display: block; }
   transition: opacity 0.3s ease 0.07s, filter 0.34s ease 0.05s, transform 0.5s var(--ease) 0.02s;
 }
 
-.l-media, .l-timer, .l-volume { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 6px; }
+.l-media, .l-timer, .l-volume { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 4px; }
 .art { object-fit: cover; background: #1c1c1e; }
 .art-sm { width: 22px; height: 22px; border-radius: 7px; }
 .art:not([src]) { visibility: hidden; }
@@ -164,6 +164,7 @@ circle { fill: none; stroke-linecap: round; }
 .pill[data-panel="focus"]   .v-focus,
 .pill[data-panel="clip"]    .v-clip,
 .pill[data-panel="shelf"]   .v-shelf,
+.pill[data-panel="notif"]   .v-notif,
 .pill[data-panel="detail"]  .v-detail,
 .pill[data-panel="wifi"]    .v-wifi,
 .pill[data-panel="battery"] .v-battery,
@@ -175,6 +176,35 @@ circle { fill: none; stroke-linecap: round; }
 /* mídia */
 .m-body { display: flex; align-items: center; gap: 16px; height: 100%; }
 .art-lg { width: 112px; height: 112px; border-radius: 18px; flex: none; }
+
+/* vinil */
+.disc { position: relative; border-radius: 50%; flex: none; }
+.disc-sm { width: 24px; height: 24px; }
+.disc-lg { width: 120px; height: 120px; filter: drop-shadow(0 8px 16px rgba(0,0,0,.55)); }
+.disc .spin { position: absolute; inset: 0; border-radius: 50%; will-change: transform; }
+.grooves {
+  background: repeating-radial-gradient(circle, #141416 0 1.4px, #1b1b1e 1.6px 2.8px);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.disc-sm .grooves { background: radial-gradient(circle, #1d1d20, #0f0f11); }
+.label {
+  position: absolute; inset: 31%; border-radius: 50%; background: #2c2c2e center / cover no-repeat;
+  box-shadow: 0 0 0 1.5px rgba(0,0,0,.55);
+}
+.disc-sm .label { inset: 24%; }
+.label::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 10%; height: 10%; min-width: 2px; min-height: 2px;
+  transform: translate(-50%, -50%); border-radius: 50%; background: #0b0b0d; box-shadow: 0 0 0 1px rgba(255,255,255,.15);
+}
+/* reflexo parado sobre o disco que gira: é o que dá a ilusão de vinil */
+.sheen {
+  position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(from 20deg, transparent 0deg, rgba(255,255,255,.13) 22deg, transparent 50deg,
+    transparent 180deg, rgba(255,255,255,.1) 202deg, transparent 230deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 31%, #000 31.5%);
+  mask: radial-gradient(circle, transparent 0 31%, #000 31.5%);
+}
+.disc-sm .sheen { -webkit-mask: radial-gradient(circle, transparent 0 24%, #000 24.5%); mask: radial-gradient(circle, transparent 0 24%, #000 24.5%); }
 .m-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .m-app { font-size: 10.5px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--dim); }
 .m-title { font-size: 16px; font-weight: 650; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -261,7 +291,7 @@ circle { fill: none; stroke-linecap: round; }
   position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
   text-align: center; font-size: 13px; color: var(--dim); gap: 3px;
 }
-.no-clips .clips { display: none; }
+.no-clips .clips:not(.notifs) { display: none; }
 .no-clips .empty { display: flex; }
 
 /* estante */
@@ -407,3 +437,15 @@ body.demo #stage::before {
   backdrop-filter: blur(12px); white-space: nowrap;
 }
 kbd { font: inherit; font-size: 11px; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.14); }
+
+/* notificações */
+.notifs li { align-items: flex-start; padding: 8px 11px; cursor: default; }
+.notifs li img, .notifs li .ni { width: 26px; height: 26px; border-radius: 7px; flex: none; background: #1c1c1e; display: grid; place-items: center; }
+.notifs li .ni svg { width: 15px; height: 15px; }
+.notifs li .nt { flex: 1; min-width: 0; }
+.notifs li .nt b { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notifs li .nt small { display: block; font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notifs li .nt i { font-style: normal; color: var(--dim); font-weight: 500; }
+.notif-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.v-notif { display: flex; flex-direction: column; }
+.v-notif .notifs { flex: 1; height: auto; }

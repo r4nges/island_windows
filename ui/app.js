@@ -25,6 +25,7 @@
     gauge: svg('<path d="M3 13a9 9 0 0 1 18 0"/><path d="M12 13l4-4"/><path d="M5 17h14"/>'),
     timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 2h6"/>'),
     clip: svg('<rect x="8" y="3" width="8" height="4" rx="1.5"/><path d="M16 5h1.5A1.5 1.5 0 0 1 19 6.5v13a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5v-13A1.5 1.5 0 0 1 6.5 5H8"/>'),
+    bell: svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
     tray: svg('<path d="M3 13l2.5-7h13L21 13"/><path d="M3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5h-5.5a3.5 3.5 0 0 1-7 0z"/>'),
     play: fillSvg('<path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/>'),
     pause: fillSvg('<rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/>'),
@@ -83,6 +84,8 @@
     tab: load("island.tab", "media"),
     view: null, // painel aberto: cpu | ram | gpu | net | wifi | battery | clock
     clips: load("island.clips", []),
+    notifs: load("island.notifs", []),
+    nstatus: null,
     shelf: load("island.shelf", []),
     cpuHist: [],
     netHist: [],
@@ -197,6 +200,7 @@
     const glowOn =
       !!S.media && (m === "media" || (m === "expanded" && pill.dataset.panel === "media") || (m === "toast" && S.hud?.glow));
     aura.classList.toggle("on", glowOn);
+    ensureSpin();
     $$(".st").forEach((b) => b.classList.remove("on"));
     if (S.view === "wifi") $(".js-open-wifi").classList.add("on");
     if (S.view === "battery") $(".js-open-batt").classList.add("on");
@@ -248,6 +252,7 @@
     ["system", I.gauge, "Sistema"],
     ["focus", I.timer, "Foco"],
     ["clip", I.clip, "Clipboard"],
+    ["notif", I.bell, "Notificações"],
     ["shelf", I.tray, "Estante"],
   ];
   const VIEW_TITLES = { cpu: "CPU", ram: "Memória", gpu: "GPU", net: "Rede", wifi: "Wi-Fi", battery: "Bateria", clock: "Relógio" };
@@ -282,7 +287,7 @@
 
   function refreshExpanded() {
     $$(".tab").forEach((b) => b.classList.toggle("on", b.dataset.id === (S.drag ? "shelf" : S.tab)));
-    renderClock(); renderMedia(); renderSlow(); renderPomo(); renderClips(); renderShelf();
+    renderClock(); renderMedia(); renderSlow(); renderPomo(); renderClips(); renderShelf(); renderNotifs();
   }
 
   // ------------------------------------------------------------ relógio do cabeçalho
@@ -339,7 +344,7 @@
   function setArt(url, real) {
     S.art = url || "";
     S.artReal = !!real;
-    $$(".js-art").forEach((img) => (url ? img.setAttribute("src", url) : img.removeAttribute("src")));
+    $$(".js-label").forEach((l) => (l.style.backgroundImage = url ? `url("${url}")` : ""));
     if (!url) { S.color = [255, 255, 255]; applyAccent(); return; }
     const img = new Image();
     img.onload = () => { S.color = dominant(img); applyAccent(); render(); };
@@ -405,6 +410,27 @@
   $(".js-ico-tray").innerHTML = I.tray;
   listen("island:media", onMedia);
   listen("island:art", onArt);
+
+  // ------------------------------------------------------------ vinil girando
+  // 33⅓ rpm = 200°/s; acelera e desacelera como um prato de verdade
+  const spins = $$(".disc .spin");
+  let spinAng = 0, spinSpeed = 0, spinRaf = 0, spinLast = 0;
+  function spinFrame(t) {
+    const dt = Math.min(0.05, (t - spinLast) / 1000 || 0.016);
+    spinLast = t;
+    const playing = !!(S.media && S.media.playing);
+    const target = playing ? 200 : 0;
+    spinSpeed += (target - spinSpeed) * Math.min(1, dt * (playing ? 2.2 : 1.4));
+    spinAng = (spinAng + spinSpeed * dt) % 360;
+    const tr = `rotate(${spinAng.toFixed(2)}deg)`;
+    spins.forEach((e) => (e.style.transform = tr));
+    const visible = mode === "media" || (mode === "expanded" && panel() === "media");
+    if (visible && (playing || spinSpeed > 0.5)) spinRaf = requestAnimationFrame(spinFrame);
+    else spinRaf = 0;
+  }
+  function ensureSpin() {
+    if (!spinRaf) { spinLast = performance.now(); spinRaf = requestAnimationFrame(spinFrame); }
+  }
 
   // ------------------------------------------------------------ volume / caps
   let firstFast = true;
@@ -845,6 +871,57 @@
   });
   listen("island:clip", onClip);
 
+  // ------------------------------------------------------------ notificações
+  function onNotif(n) {
+    if (/island/i.test(n.app)) return;
+    S.notifs = [n, ...S.notifs.filter((x) => x.id !== n.id)].slice(0, 30);
+    save("island.notifs", S.notifs.map((x) => ({ ...x, icon: x.icon && x.icon.length < 40000 ? x.icon : null })));
+    renderNotifs();
+    hud("toast", 4200, {
+      img: n.icon || "", icon: n.icon ? "" : I.bell, iconBg: n.icon ? "" : "rgba(255,255,255,.1)",
+      title: n.title || n.app, sub: n.body || n.app,
+      acc: n.title ? `<span style="color:var(--dim);font-weight:500;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n.app)}</span>` : "",
+    });
+  }
+  function renderNotifs() {
+    const st = S.nstatus;
+    let setup = "";
+    if (st === "noidentity")
+      setup = `<div class="notice"><b>Ativar notificações</b>O Windows só entrega as notificações de outros apps para programas com identidade de pacote. O Island registra essa identidade sozinho; para isso o <b style="display:inline">Modo de Desenvolvedor</b> precisa estar ligado.<br>
+        <button class="pillbtn sm primary js-notif-enable">Ativar</button> <button class="pillbtn sm js-uri" data-uri="ms-settings:developers">Modo de Desenvolvedor ${I.ext}</button>
+        <div class="js-notif-err" style="margin-top:8px;color:var(--red);font-size:11.5px"></div></div>`;
+    else if (st && st !== "allowed")
+      setup = `<div class="notice"><b>Permita o acesso às notificações</b>Em Configurações → Privacidade → Notificações, ligue o acesso para o Island.<br><button class="pillbtn sm js-uri" data-uri="ms-settings:privacy-notifications">Abrir configurações ${I.ext}</button></div>`;
+    else if (S.notifs.length)
+      setup = `<div class="notif-head"><span class="sec" style="margin:0">Recentes</span><button class="chip js-notif-clear">Limpar</button></div>`;
+    $(".js-notif-setup").innerHTML = setup;
+    const show = !st || st === "allowed";
+    $(".js-notifs").innerHTML = show
+      ? S.notifs.length
+        ? S.notifs.map((n) => `<li>${n.icon ? `<img src="${n.icon}" alt="">` : `<span class="ni">${I.bell}</span>`}<span class="nt"><b>${esc(n.title || n.app)} <i>· ${esc(n.app)}</i></b><small>${esc(n.body || "")}</small></span><em>${ago(n.time_ms || Date.now())}</em></li>`).join("")
+        : `<div class="loading">Nenhuma notificação ainda</div>`
+      : "";
+  }
+  $(".v-notif").addEventListener("click", async (e) => {
+    const u = e.target.closest(".js-uri");
+    if (u) return fire("open_uri", { uri: u.dataset.uri });
+    if (e.target.closest(".js-notif-clear")) { S.notifs = []; save("island.notifs", []); return renderNotifs(); }
+    const en = e.target.closest(".js-notif-enable");
+    if (en) {
+      en.textContent = "Registrando…";
+      try { await call("enable_notifications"); } // o app reinicia sozinho se der certo
+      catch (err) {
+        en.textContent = "Ativar";
+        const msg = String(err);
+        $(".js-notif-err").textContent = /0x80073CFF|developer|desenvolvedor|0x80073D2E/i.test(msg)
+          ? "Ligue o Modo de Desenvolvedor e tente de novo."
+          : "Não deu certo: " + msg.slice(0, 160);
+      }
+    }
+  });
+  listen("island:notif", onNotif);
+  listen("island:notif-status", (st) => { S.nstatus = st; renderNotifs(); });
+
   // ------------------------------------------------------------ estante
   const EXT_COLORS = { pdf: "#ff453a", doc: "#0a84ff", docx: "#0a84ff", xls: "#30d158", xlsx: "#30d158", csv: "#30d158",
     png: "#bf5af2", jpg: "#bf5af2", jpeg: "#bf5af2", gif: "#bf5af2", webp: "#bf5af2", mp4: "#ff375f", mov: "#ff375f",
@@ -982,6 +1059,7 @@
       if (k === "p") pomoToggle();
       if (k === " ") { e.preventDefault(); $(".js-play").click(); }
       if (k === "d") onDrop(["C:\\Users\\Rangel\\Desktop\\relatorio-notebooks.pdf", "C:\\Users\\Rangel\\Downloads\\inventario.xlsx", "C:\\fotos\\setup.png"]);
+      if (k === "t") onNotif({ id: Date.now(), app: "WhatsApp", title: "Mãe", body: "Já chegou em casa?", icon: null, time_ms: Date.now() });
       if (k === "e") { S.hover = !S.hover; refreshExpanded(); render(); }
     });
 

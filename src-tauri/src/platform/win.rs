@@ -1,7 +1,7 @@
 //! Implementação Windows: SMTC (mídia), Core Audio (volume), energia,
 //! conectividade, Caps Lock, clipboard e detecção de tela cheia.
 
-use super::{Battery, MediaInfo, Network, PowerInfo, PowerPlan, WifiNet};
+use super::{Battery, MediaInfo, Network, NotifInfo, PowerInfo, PowerPlan, WifiNet};
 use base64::Engine;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
 };
 use windows::Networking::Connectivity::{NetworkConnectivityLevel, NetworkInformation};
-use windows::Storage::Streams::DataReader;
+use windows::Storage::Streams::{DataReader, IRandomAccessStreamWithContentType};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
@@ -96,33 +96,39 @@ impl Media {
     pub fn artwork(&self) -> Option<String> {
         let props = self.last_props.as_ref()?;
         let stream = props.Thumbnail().ok()?.OpenReadAsync().ok()?.join().ok()?;
-        let ctype = stream.ContentType().map(|h| h.to_string()).unwrap_or_default();
-        let reader = DataReader::CreateDataReader(&stream).ok()?;
-        // lê em blocos: alguns players (navegadores) informam tamanho 0
-        let mut out: Vec<u8> = Vec::new();
-        loop {
-            let n = reader.LoadAsync(64 * 1024).ok()?.join().ok()?;
-            if n == 0 {
-                break;
-            }
-            let mut buf = vec![0u8; n as usize];
-            reader.ReadBytes(&mut buf).ok()?;
-            out.extend_from_slice(&buf);
-            if out.len() > 8_000_000 {
-                return None;
-            }
+        read_image(&stream)
+    }
+}
+
+/// Lê um stream de imagem inteiro e devolve como data URL.
+/// Em blocos: alguns players (navegadores) informam tamanho 0.
+fn read_image(stream: &IRandomAccessStreamWithContentType) -> Option<String> {
+    let ctype = stream.ContentType().map(|h| h.to_string()).unwrap_or_default();
+    let reader = DataReader::CreateDataReader(stream).ok()?;
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let n = reader.LoadAsync(64 * 1024).ok()?.join().ok()?;
+        if n == 0 {
+            break;
         }
-        if out.len() < 64 {
+        let mut buf = vec![0u8; n as usize];
+        reader.ReadBytes(&mut buf).ok()?;
+        out.extend_from_slice(&buf);
+        if out.len() > 8_000_000 {
             return None;
         }
-        let buf = out;
-        let mime = if ctype.starts_with("image/") { ctype } else { "image/png".into() };
-        Some(format!(
-            "data:{};base64,{}",
-            mime,
-            base64::engine::general_purpose::STANDARD.encode(buf)
-        ))
     }
+    if out.len() < 64 {
+        return None;
+    }
+    let mime = if ctype.starts_with("image/") {
+        ctype
+    } else if out.starts_with(&[0xFF, 0xD8]) {
+        "image/jpeg".into()
+    } else {
+        "image/png".into()
+    };
+    Some(format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(out)))
 }
 
 pub fn media_command(cmd: &str) {
@@ -474,4 +480,112 @@ pub fn set_power_mode(mode: &str) -> Result<(), String> {
         _ => MODE_BALANCED,
     };
     overlay_set(GUID::from_u128(g))
+}
+
+// ------------------------------------------------------------ Notificações
+
+use std::collections::HashSet;
+use windows::ApplicationModel::Package;
+use windows::Foundation::Size;
+use windows::UI::Notifications::Management::{
+    UserNotificationListener, UserNotificationListenerAccessStatus as Access,
+};
+use windows::UI::Notifications::{KnownNotificationBindings, NotificationKinds, UserNotification};
+
+/// O processo foi iniciado com identidade de pacote (pacote esparso registrado)?
+pub fn has_identity() -> bool {
+    Package::Current().is_ok()
+}
+
+/// "allowed" | "denied" | "unspecified" | "noidentity" | "error"
+pub fn notif_access(request: bool) -> String {
+    if !has_identity() {
+        return "noidentity".into();
+    }
+    let Ok(l) = UserNotificationListener::Current() else { return "error".into() };
+    let st = if request {
+        l.RequestAccessAsync().and_then(|o| o.join()).or_else(|_| l.GetAccessStatus())
+    } else {
+        l.GetAccessStatus()
+    };
+    match st {
+        Ok(Access::Allowed) => "allowed",
+        Ok(Access::Denied) => "denied",
+        Ok(_) => "unspecified",
+        Err(_) => "error",
+    }
+    .into()
+}
+
+pub struct Notifs {
+    l: UserNotificationListener,
+    seen: HashSet<u32>,
+    first: bool,
+}
+
+impl Notifs {
+    pub fn new() -> Option<Self> {
+        init_thread();
+        Some(Self { l: UserNotificationListener::Current().ok()?, seen: HashSet::new(), first: true })
+    }
+
+    /// Notificações novas desde a última chamada (a primeira só marca as que já existiam).
+    pub fn poll(&mut self) -> Vec<NotifInfo> {
+        let Ok(list) = self.l.GetNotificationsAsync(NotificationKinds::Toast).and_then(|o| o.join()) else {
+            return Vec::new();
+        };
+        let n = list.Size().unwrap_or(0);
+        let mut now: HashSet<u32> = HashSet::new();
+        let mut out = Vec::new();
+        for i in 0..n {
+            let Ok(un) = list.GetAt(i) else { continue };
+            let Ok(id) = un.Id() else { continue };
+            now.insert(id);
+            if self.first || self.seen.contains(&id) {
+                continue;
+            }
+            if let Some(info) = describe(&un, id) {
+                out.push(info);
+            }
+        }
+        self.first = false;
+        self.seen = now;
+        out
+    }
+}
+
+fn describe(un: &UserNotification, id: u32) -> Option<NotifInfo> {
+    let display = un.AppInfo().and_then(|a| a.DisplayInfo()).ok();
+    let app = display
+        .as_ref()
+        .and_then(|d| d.DisplayName().ok())
+        .map(|h| h.to_string())
+        .unwrap_or_default();
+    let icon = display.as_ref().and_then(|d| {
+        let r = d.GetLogo(Size { Width: 64.0, Height: 64.0 }).ok()?;
+        let s = r.OpenReadAsync().ok()?.join().ok()?;
+        read_image(&s)
+    });
+    let texts: Vec<String> = (|| -> windows::core::Result<Vec<String>> {
+        let binding = un.Notification()?.Visual()?.GetBinding(&KnownNotificationBindings::ToastGeneric()?)?;
+        let els = binding.GetTextElements()?;
+        let mut v = Vec::new();
+        for i in 0..els.Size()? {
+            v.push(els.GetAt(i)?.Text()?.to_string());
+        }
+        Ok(v)
+    })()
+    .unwrap_or_default();
+    if app.is_empty() && texts.is_empty() {
+        return None;
+    }
+    let time_ms = un.CreationTime().map(|t| filetime_to_unix_ms(t.UniversalTime)).unwrap_or(0);
+    Some(NotifInfo {
+        id,
+        app,
+        title: texts.first().cloned().unwrap_or_default(),
+        body: texts.iter().skip(1).cloned().collect::<Vec<_>>().join(" · "),
+        icon,
+        time_ms,
+    })
 }
