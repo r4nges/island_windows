@@ -2,6 +2,7 @@
 
 mod platform;
 mod sys;
+mod update;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -361,9 +362,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let auto = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, autostart_on, None::<&str>)?;
     let center = MenuItem::with_id(app, "center", "Recentralizar", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "Recarregar visual", true, None::<&str>)?;
+    let upd = MenuItem::with_id(app, "update", "Procurar atualizações", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&auto, &center, &reload, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&auto, &center, &reload, &upd, &sep, &quit])?;
+    update::set_tray_item(app.handle(), upd);
 
     let auto_item = auto.clone();
     TrayIconBuilder::with_id("island")
@@ -382,6 +385,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = w.eval("location.reload()");
                 }
             }
+            "update" => update::tray_clicked(app),
             "autostart" => {
                 let al = app.autolaunch();
                 let on = al.is_enabled().unwrap_or(false);
@@ -399,10 +403,13 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(shared.clone())
+        .manage(update::Updates::default())
         .invoke_handler(tauri::generate_handler![
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
-            power_info, set_power_plan, set_power_mode, open_uri, enable_notifications
+            power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
+            update::pending_update, update::install_update
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -431,6 +438,7 @@ fn main() {
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());
+            update::spawn(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

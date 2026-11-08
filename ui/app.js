@@ -46,6 +46,7 @@
     check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
     ext: svg('<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
     refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
+    upd: svg('<path d="M12 4v11"/><path d="M7 10.5l5 5 5-5"/><path d="M5 20h14"/>'),
     gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
     battery: (p, charging) => {
       const w = Math.max(1.5, (p / 100) * 14);
@@ -92,6 +93,7 @@
     pomo: { phase: "focus", focus: 25, brk: 5, running: false, endAt: 0, left: 25 * 60, cycles: 0 },
     wifi: null,
     power: null,
+    update: null, // { version, current, notes, progress: null | {pct} | "installing" }
   };
 
   // ------------------------------------------------------------ geometria + molas
@@ -955,6 +957,54 @@
   listen("island:drag", (v) => { S.drag = v; if (v) refreshExpanded(); render(); });
   listen("island:drop", onDrop);
 
+  // ------------------------------------------------------------ atualização
+  // O Rust checa o latest.json do último Release; aqui só aparece o aviso e o
+  // botão verde no cabeçalho do expandido. Instalar fecha e reabre o Island.
+  const updBtn = $(".js-upd");
+  const GREEN = { iconBg: "rgba(48,209,88,.18)", iconColor: "#30d158" };
+  let updToasted = "";
+  function renderUpd() {
+    const u = S.update;
+    updBtn.hidden = !u;
+    if (!u) return;
+    const p = u.progress;
+    updBtn.classList.toggle("busy", !!p);
+    updBtn.innerHTML = `${I.upd}<span>${p === "installing" ? "Instalando…" : p != null ? (p.pct != null ? `${p.pct}%` : "Baixando…") : `v${esc(u.version)}`}</span>`;
+    updBtn.title = p ? "Atualizando o Island" : `Instalar o Island v${u.version} e reiniciar`;
+  }
+  function onUpdate(u) {
+    S.update = { ...u, progress: S.update?.progress ?? null };
+    renderUpd();
+    if (updToasted === u.version) return; // um aviso por versão, não a cada 6 h
+    updToasted = u.version;
+    hud("toast", 5000, { icon: I.upd, ...GREEN, title: "Atualização disponível", sub: `Island v${u.version} · passe o mouse para instalar`, acc: "" });
+  }
+  function onUpdateProgress(p) {
+    if (p.state === "error") {
+      if (S.update) S.update.progress = null;
+      renderUpd();
+      hud("toast", 4500, { icon: I.upd, iconBg: "rgba(255,69,58,.18)", iconColor: "#ff453a", title: "Falha na atualização", sub: p.msg, acc: "" });
+      return;
+    }
+    if (!S.update) return;
+    S.update.progress = p.state === "installing" ? "installing" : { pct: p.pct };
+    renderUpd();
+  }
+  updBtn.addEventListener("click", () => {
+    if (!S.update || S.update.progress) return;
+    S.update.progress = { pct: null };
+    renderUpd();
+    if (DEMO) { demo.fakeInstall(); return; }
+    invoke("install_update").catch((e) => onUpdateProgress({ state: "error", msg: String(e) }));
+  });
+  listen("island:update", onUpdate);
+  listen("island:update-progress", onUpdateProgress);
+  listen("island:update-none", (v) =>
+    hud("toast", 2600, { icon: I.check, ...GREEN, title: "Island atualizado", sub: `Você já está na versão mais recente (v${v})`, acc: "" })
+  );
+  // após "Recarregar visual" o aviso pendente continua valendo
+  invoke("pending_update").then((u) => { if (u) { updToasted = u.version; onUpdate(u); } }).catch(() => {});
+
   // ------------------------------------------------------------ inicialização
   applyGeometry(...SIZES.idle);
   refreshExpanded();
@@ -982,6 +1032,7 @@
         mode: demoState.mode, saver: false, ac: demoState.charging, percent: 78, time_left: 3 * 3600 + 25 * 60,
       });
     if (cmd === "set_power_mode") return null;
+    if (cmd === "pending_update") return new URLSearchParams(location.search).has("update") ? { version: "0.4.1", current: "0.4.0", notes: null } : null;
     return null;
   }
   const demoState = { mode: "balanced", charging: false };
@@ -1061,7 +1112,19 @@
       if (k === "d") onDrop(["C:\\Users\\Rangel\\Desktop\\relatorio-notebooks.pdf", "C:\\Users\\Rangel\\Downloads\\inventario.xlsx", "C:\\fotos\\setup.png"]);
       if (k === "t") onNotif({ id: Date.now(), app: "WhatsApp", title: "Mãe", body: "Já chegou em casa?", icon: null, time_ms: Date.now() });
       if (k === "e") { S.hover = !S.hover; refreshExpanded(); render(); }
+      if (k === "u") { updToasted = ""; S.update = null; onUpdate({ version: "0.4.1", current: "0.4.0", notes: null }); }
     });
+    // simula download e instalação; no fim "reinicia" (some o botão)
+    demo.fakeInstall = () => {
+      let pct = 0;
+      const t = setInterval(() => {
+        pct += 9;
+        if (pct < 100) return onUpdateProgress({ state: "downloading", pct });
+        clearInterval(t);
+        onUpdateProgress({ state: "installing" });
+        setTimeout(() => { S.update = null; renderUpd(); }, 1500);
+      }, 180);
+    };
 
     // ?state=expanded&tab=system&view=cpu → estado fixo (screenshots)
     if (q.get("tab")) S.tab = q.get("tab");
