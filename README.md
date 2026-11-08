@@ -19,7 +19,7 @@ Dynamic Island para Windows: uma pílula preta no topo da tela que se transforma
 - **Bateria** → carga, tempo restante, modo de energia (Eficiência / Equilibrado / Desempenho), plano de energia e atalho para a economia de energia.
 - **Relógio** → relógio analógico com ponteiro de segundos suave, hora com segundos e calendário do mês.
 
-Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Iniciar com o Windows**, **Recentralizar**, **Recarregar visual**, **Procurar atualizações** e **Sair**.
+Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Iniciar com o Windows**, **Recentralizar**, **Recarregar visual**, **Procurar atualizações** e **Sair**. **Iniciar com o Windows** vem ligado: o Island ativa sozinho na primeira execução e, se você desligar pela bandeja, a escolha vale também nas atualizações.
 
 O Island se atualiza sozinho: procura versão nova ao iniciar e a cada 6 horas. Quando encontra, mostra um aviso e um botão verde com a versão no topo da ilha expandida; um clique baixa, instala e reabre o app.
 

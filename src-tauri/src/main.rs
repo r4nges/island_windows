@@ -357,6 +357,25 @@ fn spawn_notifs(app: AppHandle) {
     });
 }
 
+/// Na primeira execução liga "Iniciar com o Windows" (padrão, como o
+/// TranslucentTB). O marcador registra que isso já foi feito, para respeitar
+/// quem desligar depois pela bandeja. O desinstalador apaga os dois.
+/// Em debug não mexe: o Run apontaria para o exe de target\debug.
+fn autostart_first_run(app: &tauri::App) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-default");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&marker, b"1");
+    }
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let auto = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, autostart_on, None::<&str>)?;
@@ -433,6 +452,7 @@ fn main() {
                 }
             });
 
+            autostart_first_run(app); // antes da bandeja, para o check já vir marcado
             build_tray(app)?;
             spawn_fast(app.handle().clone(), win, shared.clone());
             spawn_media(app.handle().clone());
