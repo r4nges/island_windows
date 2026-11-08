@@ -8,7 +8,8 @@
 </head>
 <body>
 <div id="stage">
-  <div id="pill" class="pill" data-mode="idle">
+  <div id="aura"></div>
+  <div id="pill" class="pill" data-mode="idle" data-panel="media">
 
     <!-- compacto: música tocando -->
     <div class="layer l-media" style="--lw:280px;--lh:32px">
@@ -40,20 +41,22 @@
     </div>
 
     <!-- expandido -->
-    <div class="layer l-expanded" style="--lw:480px;--lh:200px">
+    <div class="layer l-expanded js-expanded" style="--lw:480px;--lh:200px">
       <header class="x-head">
         <nav class="tabs js-tabs"></nav>
+        <button class="back js-back"><span class="chev"></span><span class="js-x-title">Voltar</span></button>
         <div class="x-status">
           <span class="js-caps caps" hidden>⇪</span>
-          <span class="js-net"></span>
-          <span class="js-batt"></span>
-          <span class="clock js-clock">--:--</span>
+          <button class="st js-open-wifi" title="Redes"></button>
+          <button class="st js-open-batt" title="Bateria e energia"></button>
+          <button class="st clock js-open-clock" title="Relógio e calendário">--:--</button>
         </div>
       </header>
 
+      <!-- ===== abas ===== -->
       <section class="view v-media">
-        <div class="m-empty js-m-empty"><span class="big-ico"></span><p>Nada tocando agora</p><small>Spotify, YouTube e qualquer player do Windows aparecem aqui</small></div>
-        <div class="m-body js-m-body">
+        <div class="m-empty"><span class="big-ico js-ico-music"></span><p>Nada tocando agora</p><small>Spotify, YouTube e qualquer player do Windows aparecem aqui</small></div>
+        <div class="m-body">
           <img class="art art-lg js-art" alt="" />
           <div class="m-info">
             <div class="m-app js-m-app">Spotify</div>
@@ -76,10 +79,10 @@
 
       <section class="view v-system">
         <div class="tiles">
-          <div class="tile"><label>CPU</label><b class="js-cpu">0%</b><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-cpu-spark"/></svg></div>
-          <div class="tile"><label>RAM</label><b class="js-ram">0 GB</b><div class="mini"><div class="fill js-ram-fill"></div></div><small class="js-ram-sub"></small></div>
-          <div class="tile"><label>GPU</label><b class="js-gpu">—</b><div class="mini"><div class="fill js-gpu-fill"></div></div><small class="js-gpu-sub"></small></div>
-          <div class="tile"><label>Rede</label><b class="js-down">↓ 0</b><small class="js-up">↑ 0</small><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-net-spark"/></svg></div>
+          <button class="tile" data-detail="cpu"><label>CPU</label><b class="js-cpu">0%</b><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-cpu-spark"/></svg></button>
+          <button class="tile" data-detail="ram"><label>RAM</label><b class="js-ram">0 GB</b><div class="mini"><div class="fill js-ram-fill"></div></div><small class="js-ram-sub"></small></button>
+          <button class="tile" data-detail="gpu"><label>GPU</label><b class="js-gpu">—</b><div class="mini"><div class="fill js-gpu-fill"></div></div><small class="js-gpu-sub"></small></button>
+          <button class="tile" data-detail="net"><label>Rede</label><b class="js-down">↓ 0</b><small class="js-up">↑ 0</small><svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><path class="js-net-spark"/></svg></button>
         </div>
       </section>
 
@@ -100,21 +103,51 @@
 
       <section class="view v-clip">
         <ul class="clips js-clips"></ul>
-        <div class="empty js-clip-empty">Copie qualquer texto e ele aparece aqui.<br><small>Clique para copiar de novo.</small></div>
+        <div class="empty">Copie qualquer texto e ele aparece aqui.<br><small>Clique para copiar de novo.</small></div>
       </section>
 
       <section class="view v-shelf">
         <div class="shelf js-shelf"></div>
-        <div class="drop js-drop"><span class="big-ico"></span>Arraste arquivos até a ilha<small>ficam guardados aqui até você tirar</small></div>
+        <div class="drop"><span class="big-ico js-ico-tray"></span>Arraste arquivos até a ilha<small>ficam guardados aqui até você tirar</small></div>
+      </section>
+
+      <!-- ===== painéis ===== -->
+      <section class="view v-detail js-detail"></section>
+      <section class="view v-wifi js-wifi"></section>
+      <section class="view v-battery js-battery"></section>
+
+      <section class="view v-clock">
+        <div class="c-top">
+          <svg class="analog" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="49" class="face"/>
+            <g class="js-ticks"></g>
+            <g class="js-nums"></g>
+            <line class="h-hour js-hh" x1="50" y1="50" x2="50" y2="27"/>
+            <line class="h-min js-mh" x1="50" y1="50" x2="50" y2="14"/>
+            <g class="js-sh"><line class="h-sec" x1="50" y1="58" x2="50" y2="9"/><circle cx="50" cy="50" r="2.4" class="h-dot"/></g>
+            <circle cx="50" cy="50" r="1" fill="#000"/>
+          </svg>
+          <div class="c-digital">
+            <div class="c-time"><b class="js-c-hm">00:00</b><span class="js-c-s">00</span></div>
+            <div class="c-date js-c-date"></div>
+            <div class="c-sub js-c-sub"></div>
+          </div>
+        </div>
+        <div class="cal">
+          <div class="cal-head">
+            <b class="js-cal-title"></b>
+            <div><button class="cal-nav js-cal-prev">‹</button><button class="cal-nav js-cal-today">Hoje</button><button class="cal-nav js-cal-next">›</button></div>
+          </div>
+          <div class="cal-grid js-cal-grid"></div>
+        </div>
       </section>
     </div>
   </div>
 </div>
 
 <div id="demo-hint" hidden>
-  <b>Modo demo</b> · passe o mouse na ilha ·
-  <kbd>V</kbd> volume · <kbd>C</kbd> clipboard · <kbd>B</kbd> carregador · <kbd>K</kbd> Caps Lock ·
-  <kbd>W</kbd> Wi-Fi · <kbd>N</kbd> próxima música · <kbd>P</kbd> pomodoro · <kbd>Espaço</kbd> play/pause
+  <b>Modo demo</b> · passe o mouse na ilha · clique no Wi-Fi, bateria, relógio e nos cards de Sistema ·
+  <kbd>V</kbd> volume · <kbd>C</kbd> copiar · <kbd>B</kbd> carregador · <kbd>K</kbd> Caps · <kbd>N</kbd> próxima · <kbd>P</kbd> pomodoro
 </div>
 
 <script src="app.js"></script>

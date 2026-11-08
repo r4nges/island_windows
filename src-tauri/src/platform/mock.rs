@@ -1,6 +1,6 @@
 //! Dados simulados para rodar fora do Windows.
 
-use super::{Battery, MediaInfo, Network};
+use super::{Battery, MediaInfo, Network, PowerInfo, PowerPlan, WifiNet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
@@ -66,4 +66,42 @@ pub fn network() -> Network {
 
 pub fn clipboard_seq() -> u32 {
     0
+}
+
+pub fn wifi_list() -> Result<Vec<WifiNet>, String> {
+    let n = |ssid: &str, signal, secure, saved, connected| WifiNet {
+        ssid: ssid.into(), signal, secure, saved, connected, profile: ssid.into(),
+    };
+    Ok(vec![
+        n("Casa_5G", 92, true, true, true),
+        n("Casa_2.4G", 80, true, true, false),
+        n("VIVO-8A21", 54, true, false, false),
+        n("Cafe Livre", 31, false, false, false),
+    ])
+}
+
+pub fn wifi_connect(_profile: &str) -> Result<(), String> {
+    Ok(())
+}
+
+pub fn power_info() -> PowerInfo {
+    PowerInfo {
+        plans: vec![
+            PowerPlan { guid: "381B4222-F694-41F0-9685-FF5BB260DF2E".into(), name: "Equilibrado".into(), active: true },
+            PowerPlan { guid: "8C5E7FDA-E8BF-4A96-9A85-A6E23A8C635C".into(), name: "Alto desempenho".into(), active: false },
+        ],
+        mode: Some("balanced".into()),
+        saver: false,
+        ac: false,
+        percent: Some(78),
+        time_left: Some(3 * 3600 + 25 * 60),
+    }
+}
+
+pub fn set_power_plan(_guid: &str) -> Result<(), String> {
+    Ok(())
+}
+
+pub fn set_power_mode(_mode: &str) -> Result<(), String> {
+    Ok(())
 }

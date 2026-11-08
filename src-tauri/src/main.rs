@@ -28,6 +28,8 @@ struct Shared {
     rect: Mutex<Rect>,
     /// sequência do clipboard gerada por nós (para não virar "Copiado")
     own_clip_seq: AtomicU32,
+    /// painel de detalhe aberto no frontend ("cpu", "ram", "gpu", "net")
+    detail: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -42,6 +44,7 @@ struct Slow {
     stats: sys::Stats,
     battery: Option<platform::Battery>,
     network: platform::Network,
+    detail: Option<serde_json::Value>,
 }
 
 // ------------------------------------------------------------- comandos
@@ -62,6 +65,57 @@ fn copy_text(state: tauri::State<'_, Arc<Shared>>, text: String) -> Result<(), S
     cb.set_text(text).map_err(|e| e.to_string())?;
     state.own_clip_seq.store(platform::clipboard_seq(), Ordering::SeqCst);
     Ok(())
+}
+
+#[tauri::command]
+fn set_detail(state: tauri::State<'_, Arc<Shared>>, kind: Option<String>) {
+    *state.detail.lock().unwrap() = kind;
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn wifi_list() -> Result<Vec<platform::WifiNet>, String> {
+    blocking(platform::wifi_list).await?
+}
+
+#[tauri::command]
+async fn wifi_connect(profile: String) -> Result<(), String> {
+    blocking(move || platform::wifi_connect(&profile)).await?
+}
+
+#[tauri::command]
+async fn power_info() -> Result<platform::PowerInfo, String> {
+    blocking(platform::power_info).await
+}
+
+#[tauri::command]
+async fn set_power_plan(guid: String) -> Result<(), String> {
+    blocking(move || platform::set_power_plan(&guid)).await?
+}
+
+#[tauri::command]
+async fn set_power_mode(mode: String) -> Result<(), String> {
+    blocking(move || platform::set_power_mode(&mode)).await?
+}
+
+/// Abre URIs do sistema (ms-settings:..., ms-availablenetworks:) ou o Gerenciador de Tarefas
+#[tauri::command]
+fn open_uri(uri: String) {
+    let allowed = uri.starts_with("ms-settings:") || uri.starts_with("ms-availablenetworks:") || uri == "taskmgr";
+    if !allowed {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = if uri == "taskmgr" {
+            std::process::Command::new("taskmgr").spawn()
+        } else {
+            std::process::Command::new("explorer").arg(&uri).spawn()
+        };
+    }
 }
 
 #[tauri::command]
@@ -164,6 +218,8 @@ fn spawn_media(app: AppHandle) {
         let mut last: Option<platform::MediaInfo> = None;
         let mut last_track = String::new();
         let mut first = true;
+        // navegadores entregam a capa com atraso: tenta de novo por ~15 s
+        let mut art_tries: u32 = 0;
         loop {
             let snap = media.snapshot();
             let track = snap.as_ref().map(|m| format!("{}\u{1}{}", m.title, m.artist)).unwrap_or_default();
@@ -185,11 +241,21 @@ fn spawn_media(app: AppHandle) {
             }
             if track != last_track {
                 last_track = track;
+                art_tries = 0;
                 if snap.is_some() {
-                    // a capa às vezes chega um pouco depois do título
                     thread::sleep(Duration::from_millis(250));
                     let _ = media.snapshot();
-                    let _ = app.emit("island:art", media.artwork());
+                    let art = media.artwork();
+                    if art.is_none() {
+                        art_tries = 1;
+                    }
+                    let _ = app.emit("island:art", art);
+                }
+            } else if art_tries > 0 && art_tries <= 20 && snap.is_some() {
+                art_tries += 1;
+                if let Some(art) = media.artwork() {
+                    art_tries = 0;
+                    let _ = app.emit("island:art", Some(art));
                 }
             }
             first = false;
@@ -200,7 +266,7 @@ fn spawn_media(app: AppHandle) {
 }
 
 /// Sistema, bateria e rede a cada 1 s.
-fn spawn_slow(app: AppHandle) {
+fn spawn_slow(app: AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
         platform::init_thread();
         let mut mon = sys::Monitor::new();
@@ -215,9 +281,12 @@ fn spawn_slow(app: AppHandle) {
             if tick % 3 == 0 {
                 net = platform::network();
             }
+            let stats = mon.sample(dt);
+            let kind = shared.detail.lock().unwrap().clone();
+            let detail = kind.map(|k| mon.detail(&k));
             let _ = app.emit(
                 "island:slow",
-                Slow { stats: mon.sample(dt), battery: platform::battery(), network: net.clone() },
+                Slow { stats, battery: platform::battery(), network: net.clone(), detail },
             );
         }
     });
@@ -267,7 +336,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(shared.clone())
-        .invoke_handler(tauri::generate_handler![set_hit_rect, media_cmd, copy_text, open_path])
+        .invoke_handler(tauri::generate_handler![
+            set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
+            power_info, set_power_plan, set_power_mode, open_uri
+        ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
             place_top_center(&win);
@@ -293,7 +365,7 @@ fn main() {
             build_tray(app)?;
             spawn_fast(app.handle().clone(), win, shared.clone());
             spawn_media(app.handle().clone());
-            spawn_slow(app.handle().clone());
+            spawn_slow(app.handle().clone(), shared.clone());
             Ok(())
         })
         .run(tauri::generate_context!())

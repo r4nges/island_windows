@@ -29,6 +29,38 @@ pub struct Network {
     pub name: String,
 }
 
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct WifiNet {
+    pub ssid: String,
+    /// 0..100
+    pub signal: u32,
+    pub secure: bool,
+    /// existe perfil salvo (dá para conectar com um clique)
+    pub saved: bool,
+    pub connected: bool,
+    pub profile: String,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct PowerPlan {
+    pub guid: String,
+    pub name: String,
+    pub active: bool,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct PowerInfo {
+    pub plans: Vec<PowerPlan>,
+    /// "efficiency" | "balanced" | "performance" (modo de energia do Windows 11)
+    pub mode: Option<String>,
+    /// economia de energia ligada
+    pub saver: bool,
+    pub ac: bool,
+    pub percent: Option<u8>,
+    /// segundos restantes na bateria (quando o Windows estima)
+    pub time_left: Option<u32>,
+}
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

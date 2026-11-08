@@ -1,7 +1,7 @@
 //! Implementação Windows: SMTC (mídia), Core Audio (volume), energia,
 //! conectividade, Caps Lock, clipboard e detecção de tela cheia.
 
-use super::{Battery, MediaInfo, Network};
+use super::{Battery, MediaInfo, Network, PowerInfo, PowerPlan, WifiNet};
 use base64::Engine;
 use std::time::{Duration, Instant};
 
@@ -96,15 +96,26 @@ impl Media {
     pub fn artwork(&self) -> Option<String> {
         let props = self.last_props.as_ref()?;
         let stream = props.Thumbnail().ok()?.OpenReadAsync().ok()?.join().ok()?;
-        let size = stream.Size().ok()? as u32;
-        if size == 0 || size > 8_000_000 {
-            return None;
-        }
         let ctype = stream.ContentType().map(|h| h.to_string()).unwrap_or_default();
         let reader = DataReader::CreateDataReader(&stream).ok()?;
-        reader.LoadAsync(size).ok()?.join().ok()?;
-        let mut buf = vec![0u8; size as usize];
-        reader.ReadBytes(&mut buf).ok()?;
+        // lê em blocos: alguns players (navegadores) informam tamanho 0
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let n = reader.LoadAsync(64 * 1024).ok()?.join().ok()?;
+            if n == 0 {
+                break;
+            }
+            let mut buf = vec![0u8; n as usize];
+            reader.ReadBytes(&mut buf).ok()?;
+            out.extend_from_slice(&buf);
+            if out.len() > 8_000_000 {
+                return None;
+            }
+        }
+        if out.len() < 64 {
+            return None;
+        }
+        let buf = out;
         let mime = if ctype.starts_with("image/") { ctype } else { "image/png".into() };
         Some(format!(
             "data:{};base64,{}",
@@ -210,4 +221,257 @@ pub fn network() -> Network {
 
 pub fn clipboard_seq() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
+}
+
+// ------------------------------------------------------------------ Wi-Fi
+
+use std::ptr::null_mut;
+use windows::core::{GUID, PCWSTR};
+use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
+use windows::Win32::NetworkManagement::WiFi::{
+    dot11_BSS_type_infrastructure, wlan_connection_mode_profile, WlanCloseHandle, WlanConnect,
+    WlanEnumInterfaces, WlanFreeMemory, WlanGetAvailableNetworkList, WlanOpenHandle, WlanScan,
+    WLAN_AVAILABLE_NETWORK_CONNECTED, WLAN_AVAILABLE_NETWORK_HAS_PROFILE, WLAN_AVAILABLE_NETWORK_LIST,
+    WLAN_CONNECTION_PARAMETERS, WLAN_INTERFACE_INFO_LIST,
+};
+
+struct Wlan(HANDLE);
+
+impl Wlan {
+    fn open() -> Result<Self, String> {
+        let mut ver = 0u32;
+        let mut h = HANDLE::default();
+        let r = unsafe { WlanOpenHandle(2, None, &mut ver, &mut h) };
+        if r != 0 {
+            return Err(format!("wlan:{r}"));
+        }
+        Ok(Wlan(h))
+    }
+
+    fn first_iface(&self) -> Option<GUID> {
+        unsafe {
+            let mut list: *mut WLAN_INTERFACE_INFO_LIST = null_mut();
+            if WlanEnumInterfaces(self.0, None, &mut list) != 0 || list.is_null() {
+                return None;
+            }
+            let l = &*list;
+            let g = if l.dwNumberOfItems > 0 { Some(l.InterfaceInfo[0].InterfaceGuid) } else { None };
+            WlanFreeMemory(list as *const _);
+            g
+        }
+    }
+}
+
+impl Drop for Wlan {
+    fn drop(&mut self) {
+        unsafe {
+            WlanCloseHandle(self.0, None);
+        }
+    }
+}
+
+fn wide_to_string(w: &[u16]) -> String {
+    let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+    String::from_utf16_lossy(&w[..end])
+}
+
+/// Redes visíveis. Erro "location" = Windows exige permissão de Localização
+/// para apps de desktop lerem nomes de redes (Windows 11 24H2+).
+pub fn wifi_list() -> Result<Vec<WifiNet>, String> {
+    let w = Wlan::open()?;
+    let Some(guid) = w.first_iface() else { return Err("noadapter".into()) };
+    unsafe {
+        // dispara uma varredura nova; o resultado chega em ~2-4 s
+        let _ = WlanScan(w.0, &guid, None, None, None);
+        let mut list: *mut WLAN_AVAILABLE_NETWORK_LIST = null_mut();
+        let r = WlanGetAvailableNetworkList(w.0, &guid, 0, None, &mut list);
+        if r == 5 {
+            return Err("location".into());
+        }
+        if r != 0 || list.is_null() {
+            return Err(format!("wlan:{r}"));
+        }
+        let l = &*list;
+        let items = std::slice::from_raw_parts(l.Network.as_ptr(), l.dwNumberOfItems as usize);
+        let mut out: Vec<WifiNet> = Vec::new();
+        for n in items {
+            let len = (n.dot11Ssid.uSSIDLength as usize).min(32);
+            let ssid = String::from_utf8_lossy(&n.dot11Ssid.ucSSID[..len]).to_string();
+            if ssid.is_empty() {
+                continue; // rede oculta
+            }
+            let saved = n.dwFlags & WLAN_AVAILABLE_NETWORK_HAS_PROFILE != 0;
+            let connected = n.dwFlags & WLAN_AVAILABLE_NETWORK_CONNECTED != 0;
+            let profile = wide_to_string(&n.strProfileName);
+            let item = WifiNet {
+                ssid: ssid.clone(),
+                signal: n.wlanSignalQuality,
+                secure: n.bSecurityEnabled.as_bool(),
+                saved,
+                connected,
+                profile: profile.clone(),
+            };
+            // o Windows repete a mesma rede (com e sem perfil): mescla
+            if let Some(e) = out.iter_mut().find(|e| e.ssid == ssid) {
+                e.signal = e.signal.max(item.signal);
+                e.connected |= connected;
+                if saved {
+                    e.saved = true;
+                    e.profile = profile;
+                }
+            } else {
+                out.push(item);
+            }
+        }
+        WlanFreeMemory(list as *const _);
+        out.sort_by(|a, b| b.connected.cmp(&a.connected).then(b.signal.cmp(&a.signal)));
+        Ok(out)
+    }
+}
+
+/// Conecta numa rede que já tem perfil salvo no Windows.
+pub fn wifi_connect(profile: &str) -> Result<(), String> {
+    let w = Wlan::open()?;
+    let Some(guid) = w.first_iface() else { return Err("noadapter".into()) };
+    let wide: Vec<u16> = profile.encode_utf16().chain(std::iter::once(0)).collect();
+    let params = WLAN_CONNECTION_PARAMETERS {
+        wlanConnectionMode: wlan_connection_mode_profile,
+        strProfile: PCWSTR(wide.as_ptr()),
+        pDot11Ssid: null_mut(),
+        pDesiredBssidList: null_mut(),
+        dot11BssType: dot11_BSS_type_infrastructure,
+        dwFlags: 0,
+    };
+    let r = unsafe { WlanConnect(w.0, &guid, &params, None) };
+    if r == 0 { Ok(()) } else { Err(format!("wlan:{r}")) }
+}
+
+// ------------------------------------------------------------------ Energia
+
+use windows::core::{s, w};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Power::{
+    PowerEnumerate, PowerGetActiveScheme, PowerReadFriendlyName, PowerSetActiveScheme, ACCESS_SCHEME,
+};
+
+// Modos de energia do Windows 11 (overlay sobre o plano Equilibrado)
+const MODE_EFFICIENCY: u128 = 0x961cc777_2547_4f9d_8174_7d86181b8a7a;
+const MODE_BETTER_BATTERY: u128 = 0x3af9b8d9_7c97_431d_ad78_34a8bfea439f;
+const MODE_BALANCED: u128 = 0;
+const MODE_PERFORMANCE: u128 = 0xded574b5_45a0_4f42_8737_46345c09c238;
+
+fn guid_str(g: &GUID) -> String {
+    format!("{g:?}")
+}
+
+fn parse_guid(s: &str) -> Option<GUID> {
+    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    u128::from_str_radix(&hex, 16).ok().map(GUID::from_u128)
+}
+
+fn friendly_name(g: &GUID) -> String {
+    unsafe {
+        let mut size = 0u32;
+        let _ = PowerReadFriendlyName(None, Some(g), None, None, None, &mut size);
+        if size == 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; size as usize];
+        if PowerReadFriendlyName(None, Some(g), None, None, Some(buf.as_mut_ptr()), &mut size).0 != 0 {
+            return String::new();
+        }
+        let w: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        wide_to_string(&w)
+    }
+}
+
+fn active_scheme() -> Option<GUID> {
+    unsafe {
+        let mut p: *mut GUID = null_mut();
+        if PowerGetActiveScheme(None, &mut p).0 != 0 || p.is_null() {
+            return None;
+        }
+        let g = *p;
+        let _ = LocalFree(Some(HLOCAL(p as *mut core::ffi::c_void)));
+        Some(g)
+    }
+}
+
+type FnGetOverlay = unsafe extern "system" fn(*mut GUID) -> u32;
+type FnSetOverlay = unsafe extern "system" fn(GUID) -> u32;
+
+fn overlay_get() -> Option<GUID> {
+    unsafe {
+        let h = LoadLibraryW(w!("powrprof.dll")).ok()?;
+        let f = GetProcAddress(h, s!("PowerGetEffectiveOverlayScheme"))?;
+        let f: FnGetOverlay = std::mem::transmute(f);
+        let mut g = GUID::zeroed();
+        if f(&mut g) == 0 { Some(g) } else { None }
+    }
+}
+
+fn overlay_set(g: GUID) -> Result<(), String> {
+    unsafe {
+        let h = LoadLibraryW(w!("powrprof.dll")).map_err(|e| e.to_string())?;
+        let f = GetProcAddress(h, s!("PowerSetActiveOverlayScheme")).ok_or("sem suporte")?;
+        let f: FnSetOverlay = std::mem::transmute(f);
+        let r = f(g);
+        if r == 0 { Ok(()) } else { Err(format!("power:{r}")) }
+    }
+}
+
+pub fn power_info() -> PowerInfo {
+    let active = active_scheme();
+    let mut plans = Vec::new();
+    for i in 0..32u32 {
+        let mut g = GUID::zeroed();
+        let mut size = std::mem::size_of::<GUID>() as u32;
+        let r = unsafe {
+            PowerEnumerate(None, None, None, ACCESS_SCHEME, i, Some(&mut g as *mut GUID as *mut u8), &mut size)
+        };
+        if r.0 != 0 {
+            break;
+        }
+        plans.push(PowerPlan { guid: guid_str(&g), name: friendly_name(&g), active: Some(g) == active });
+    }
+
+    let mode = overlay_get().map(|g| {
+        match g.to_u128() {
+            MODE_EFFICIENCY | MODE_BETTER_BATTERY => "efficiency",
+            MODE_PERFORMANCE => "performance",
+            _ => "balanced",
+        }
+        .to_string()
+    });
+
+    let mut st = SYSTEM_POWER_STATUS::default();
+    let ok = unsafe { GetSystemPowerStatus(&mut st).is_ok() };
+    let has_batt = ok && st.BatteryFlag != 128 && st.BatteryLifePercent != 255;
+    let ac = ok && st.ACLineStatus == 1;
+    PowerInfo {
+        plans,
+        mode,
+        saver: ok && st.SystemStatusFlag == 1,
+        ac,
+        percent: if has_batt { Some(st.BatteryLifePercent.min(100)) } else { None },
+        time_left: if has_batt && !ac && st.BatteryLifeTime != u32::MAX { Some(st.BatteryLifeTime) } else { None },
+    }
+}
+
+pub fn set_power_plan(guid: &str) -> Result<(), String> {
+    let g = parse_guid(guid).ok_or("guid inválido")?;
+    let r = unsafe { PowerSetActiveScheme(None, Some(&g)) };
+    if r.0 == 0 { Ok(()) } else { Err(format!("power:{}", r.0)) }
+}
+
+pub fn set_power_mode(mode: &str) -> Result<(), String> {
+    let g = match mode {
+        "efficiency" => MODE_EFFICIENCY,
+        "performance" => MODE_PERFORMANCE,
+        _ => MODE_BALANCED,
+    };
+    overlay_set(GUID::from_u128(g))
 }

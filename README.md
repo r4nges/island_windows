@@ -11,6 +11,13 @@ Dynamic Island para Windows: uma pílula preta no topo da tela que se transforma
 | Pomodoro | anel + contagem compacta enquanto roda |
 | Expandido (mouse em cima) | abas **Mídia**, **Sistema** (CPU, RAM, GPU NVIDIA, rede), **Foco**, **Clipboard** (histórico, clique para recopiar) e **Estante** (arraste arquivos até a ilha) |
 
+### Painéis (clique dentro da ilha expandida)
+
+- **Cards de Sistema** → detalhe do componente: CPU (modelo, frequência, uso por núcleo), RAM (disponível, paginação), GPU (temperatura, consumo, clock, ventoinha, VRAM) e Rede (interfaces, IPs, tráfego), com os processos que mais usam cada um e atalho para o Gerenciador de Tarefas.
+- **Wi-Fi** → redes ao redor com sinal; um clique conecta nas redes salvas, redes novas abrem o painel de senha do Windows.
+- **Bateria** → carga, tempo restante, modo de energia (Eficiência / Equilibrado / Desempenho), plano de energia e atalho para a economia de energia.
+- **Relógio** → relógio analógico com ponteiro de segundos suave, hora com segundos e calendário do mês.
+
 Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Iniciar com o Windows**, **Recentralizar**, **Recarregar visual** e **Sair**.
 
 ## Pré-requisitos (uma vez)
@@ -45,6 +52,10 @@ Teclas: `V` volume, `M` mudo, `K` Caps Lock, `C` copiar, `B` carregador, `W` Wi-
 - `src-tauri/src/main.rs`: frequência de leitura e eventos.
 
 ## Limitações conhecidas
+
+- **Lista de Wi-Fi no Windows 11 24H2+** exige a permissão de Localização para apps de desktop (Configurações → Privacidade → Localização). A ilha avisa e abre a tela certa.
+- **Economia de energia** não tem API pública para ligar/desligar; o botão abre a página do Windows. O modo de energia só tem efeito com o plano Equilibrado ativo.
+- **VRAM por processo** não é informada pelo driver NVIDIA no Windows (modo WDDM), por isso aparece “—”.
 
 - **Notificações de outros apps** (WhatsApp, Teams…) não aparecem: a API do Windows para lê-las exige app empacotado em MSIX com identidade. Fica para uma v2.
 - O **OSD de volume nativo** do Windows continua aparecendo junto do HUD da ilha.
