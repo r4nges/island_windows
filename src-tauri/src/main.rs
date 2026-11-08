@@ -34,6 +34,8 @@ struct Shared {
     detail: Mutex<Option<String>>,
     /// zoom do WebView = escala da ilha (0 enquanto não carregou = 1.0)
     zoom: Mutex<f64>,
+    /// monitor escolhido nas configurações (`None` = principal)
+    monitor: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -186,11 +188,15 @@ fn set_settings(
 ) -> Result<settings::Settings, String> {
     let mut s = settings;
     s.sanitize();
-    let old_scale = state.cur.lock().unwrap().scale;
+    let old = state.cur.lock().unwrap().clone();
     settings::save(&state.file, &s).map_err(|e| e.to_string())?;
     *state.cur.lock().unwrap() = s.clone();
-    if (old_scale - s.scale).abs() > f64::EPSILON {
-        if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_webview_window("main") {
+        if old.monitor != s.monitor {
+            *shared.monitor.lock().unwrap() = s.monitor.clone();
+            place_top_center(&w, &shared);
+        }
+        if (old.scale - s.scale).abs() > f64::EPSILON {
             apply_scale(&w, &shared, s.scale);
         }
     }
@@ -203,7 +209,29 @@ fn apply_scale(win: &WebviewWindow, shared: &Shared, scale: f64) {
     *shared.zoom.lock().unwrap() = scale;
     let _ = win.set_size(LogicalSize::new(BASE_W * scale, BASE_H * scale));
     let _ = win.set_zoom(scale);
-    place_top_center(win);
+    place_top_center(win, shared);
+}
+
+#[derive(Serialize)]
+struct MonitorInfo {
+    id: String,
+    width: u32,
+    height: u32,
+    primary: bool,
+}
+
+#[tauri::command]
+fn list_monitors(app: AppHandle) -> Vec<MonitorInfo> {
+    let Some(w) = app.get_webview_window("main") else { return vec![] };
+    let primary = w.primary_monitor().ok().flatten().and_then(|m| m.name().cloned());
+    w.available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| {
+            let id = m.name()?.clone();
+            Some(MonitorInfo { primary: primary.as_ref() == Some(&id), width: m.size().width, height: m.size().height, id })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -221,11 +249,32 @@ fn open_path(path: String) {
 
 // ------------------------------------------------------------- threads
 
-fn place_top_center(win: &WebviewWindow) {
-    let mon = win.current_monitor().ok().flatten().or_else(|| win.primary_monitor().ok().flatten());
-    if let (Some(m), Ok(size)) = (mon, win.outer_size()) {
-        let x = m.position().x + (m.size().width as i32 - size.width as i32) / 2;
-        let _ = win.set_position(PhysicalPosition::new(x, m.position().y));
+/// Monitor escolhido; se ele não estiver conectado (ou for "automático"), o principal.
+fn target_monitor(win: &WebviewWindow, shared: &Shared) -> Option<tauri::Monitor> {
+    let want = shared.monitor.lock().unwrap().clone();
+    want.and_then(|name| {
+        win.available_monitors()
+            .ok()?
+            .into_iter()
+            .find(|m| m.name().is_some_and(|n| *n == name))
+    })
+    .or_else(|| win.primary_monitor().ok().flatten())
+    .or_else(|| win.current_monitor().ok().flatten())
+}
+
+/// Posição (física) que a janela deve ocupar: topo, centralizada no monitor.
+/// A largura sai da escala do monitor de destino, não do tamanho atual: ao
+/// trocar para um monitor com outro DPI o Windows redimensiona a janela.
+fn target_position(win: &WebviewWindow, shared: &Shared) -> Option<PhysicalPosition<i32>> {
+    let m = target_monitor(win, shared)?;
+    let w = (BASE_W * shared.zoom() * m.scale_factor()).round() as i32;
+    let x = m.position().x + (m.size().width as i32 - w) / 2;
+    Some(PhysicalPosition::new(x, m.position().y))
+}
+
+fn place_top_center(win: &WebviewWindow, shared: &Shared) {
+    if let Some(p) = target_position(win, shared) {
+        let _ = win.set_position(p);
     }
 }
 
@@ -299,6 +348,16 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 if fs != hidden {
                     hidden = fs;
                     let _ = if fs { win.hide() } else { win.show() };
+                }
+            }
+
+            // monitor conectado/desconectado (ou resolução mudou): ~a cada 2 s
+            // confere onde a ilha deveria estar e só move se mudou de verdade
+            if tick % 60 == 0 {
+                if let (Some(want), Ok(now)) = (target_position(&win, &shared), win.outer_position()) {
+                    if (want.x - now.x).abs() > 2 || want.y != now.y {
+                        let _ = win.set_position(want);
+                    }
                 }
             }
 
@@ -460,7 +519,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => app.exit(0),
             "center" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    place_top_center(&w);
+                    place_top_center(&w, &app.state::<Arc<Shared>>());
                 }
             }
             "reload" => {
@@ -495,13 +554,15 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
-            update::pending_update, update::install_update, check_update, get_settings, set_settings
+            update::pending_update, update::install_update, check_update, get_settings, set_settings,
+            list_monitors
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
 
             let file = settings::path(&app.path().app_config_dir()?);
             let prefs = settings::load(&file);
+            *shared.monitor.lock().unwrap() = prefs.monitor.clone();
             apply_scale(&win, &shared, prefs.scale);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });
 

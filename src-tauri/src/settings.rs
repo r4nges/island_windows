@@ -61,11 +61,13 @@ pub struct Settings {
     pub aura: Aura,
     /// escala da ilha: 0.9 | 1.0 | 1.1
     pub scale: f64,
+    /// nome do monitor (ex.: `\\.\DISPLAY2`); `None` = principal
+    pub monitor: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { modules: Modules::default(), aura: Aura::default(), scale: 1.0 }
+        Self { modules: Modules::default(), aura: Aura::default(), scale: 1.0, monitor: None }
     }
 }
 

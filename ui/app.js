@@ -103,6 +103,7 @@
     modules: { volume: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true },
     aura: { intensity: "subtle", expanded: false, color: "auto" },
     scale: 1.0,
+    monitor: null,
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */
@@ -317,7 +318,7 @@
     if (v === "clock") { calMonth = null; renderCalendar(); clockLoop(); }
     if (v === "wifi") { loadWifi(); wifiTimer = setInterval(loadWifi, 5000); }
     if (v === "battery") { loadPower(); powerTimer = setInterval(loadPower, 4000); }
-    if (v === "settings") renderSettings();
+    if (v === "settings") { renderSettings(); loadMonitors(); }
     render();
   }
   $(".js-open-settings").innerHTML = I.gear;
@@ -1088,6 +1089,23 @@
   const toggle = (key, label, onv) =>
     `<button class="s-row" data-toggle="${key}"><span>${label}</span><span class="sw g ${onv ? "on" : ""}"></span></button>`;
 
+  // \\.\DISPLAY2 -> "Tela 2"
+  const monLabel = (m) => `Tela ${(m.id.match(/(\d+)\s*$/) || [, "?"])[1]} · ${m.width}×${m.height}`;
+  let monitors = null;
+  function loadMonitors() {
+    invoke("list_monitors").then((l) => { monitors = l || []; if (S.view === "settings") renderSettings(); }).catch(() => {});
+  }
+  function monitorChips(cur) {
+    if (!monitors) return `<div class="s-label">Procurando monitores…</div>`;
+    if (monitors.length <= 1) return `<div class="s-label">Só um monitor conectado: a ilha fica nele.</div>`;
+    // escolhido mas desconectado: continua marcado, avisando que está no principal
+    const missing = cur && !monitors.some((m) => m.id === cur);
+    return `<div class="plans s-mon">
+      <button class="chip ${!cur ? "on" : ""}" data-monitor="">Principal</button>
+      ${monitors.map((m) => `<button class="chip ${cur === m.id ? "on" : ""}" data-monitor="${esc(m.id)}">${monLabel(m)}${m.primary ? " · principal" : ""}</button>`).join("")}
+    </div>${missing ? `<div class="s-label">O monitor escolhido está desconectado; a ilha voltou para o principal.</div>` : ""}`;
+  }
+
   function renderSettings() {
     const c = cfg(), a = c.aura;
     const custom = a.color !== "auto" && !SWATCHES.includes(a.color);
@@ -1103,6 +1121,8 @@
       <input type="range" class="hue js-hue" min="0" max="359" value="${custom ? hexHue(a.color) : 210}" ${custom ? "" : "hidden"}>
       <div class="sec">Tamanho da ilha</div>
       ${seg("scale", SCALE_OPTS, c.scale)}
+      <div class="sec">Monitor</div>
+      ${monitorChips(c.monitor)}
       <div class="sec">Avisos na ilha</div>
       <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)).join("")}</div>
       <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
@@ -1138,6 +1158,8 @@
       const v = sw.dataset.color;
       return setCfg("aura.color", v === "custom" ? hueHex(+$(".js-hue").value) : v);
     }
+    const mon = e.target.closest("[data-monitor]");
+    if (mon) return setCfg("monitor", mon.dataset.monitor || null, { now: true });
     if (e.target.closest(".js-check-upd")) fire("check_update");
   });
   $(".js-settings").addEventListener("input", (e) => {
@@ -1177,6 +1199,8 @@
         mode: demoState.mode, saver: false, ac: demoState.charging, percent: 78, time_left: 3 * 3600 + 25 * 60,
       });
     if (cmd === "set_power_mode") return null;
+    if (cmd === "list_monitors")
+      return sleep(120, [{ id: "\\\\.\\DISPLAY1", width: 1920, height: 1080, primary: true }, { id: "\\\\.\\DISPLAY2", width: 2560, height: 1440, primary: false }]);
     if (cmd === "get_settings") return load("island.demo.cfg", null) || DEFAULT_CFG;
     if (cmd === "set_settings") { save("island.demo.cfg", args.settings); document.body.style.zoom = args.settings.scale; return args.settings; }
     if (cmd === "pending_update") return new URLSearchParams(location.search).has("update") ? { version: "0.4.1", current: "0.4.0", notes: null } : null;
