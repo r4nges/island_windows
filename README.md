@@ -53,7 +53,7 @@ Com **Configurações → Barra de tarefas → Barra flutuante do RAD** ligado, 
 - **Itens**: Iniciar (tecla Win), Pesquisar (Win+S), os apps fixados na barra do Windows (na mesma ordem, inclusive apps da Store) e os apps abertos com os **ícones reais**, ⌃ para os ícones ocultos da bandeja (Win+B e Enter, que funciona com a barra escondida) e a Lixeira.
 - **Apps abertos**: o mesmo filtro da barra nativa (janelas visíveis, sem dono, sem `WS_EX_TOOLWINDOW`, fora de outra área de trabalho virtual), agrupadas pelo AppUserModelID ou pelo exe e juntadas ao fixado correspondente. Ponto embaixo = aberto; mais largo = em foco. A lista se atualiza por evento (`SetWinEventHook`), sem polling.
 - **Cliques**: app fechado abre; com uma janela, foca (ou minimiza, se já está em foco); com várias, alterna entre elas. A dica mostra o nome e quantas janelas há.
-- **Opções** (valem na hora): **Vidro** Sistema (segue o tema claro/escuro dos apps e acompanha a troca), Escuro, Claro ou Transparente; **Posição dos ícones** Centro ou Esquerda; **Tamanho** Pequeno, Médio ou Grande (38, 46 ou 54 px); **Ampliar ao passar o mouse** Não, Leve ou Forte; **Botão de ícones ocultos (⌃)**.
+- **Opções** (valem na hora): **Vidro** Sistema (segue o tema claro/escuro dos apps e acompanha a troca), Escuro, Claro ou Transparente; **Posição dos ícones** Centro ou Esquerda; **Tamanho** Pequeno (padrão), Médio ou Grande (32, 40 ou 48 px); **Ampliar ao passar o mouse** Não, Leve ou Forte; **Botão de ícones ocultos (⌃)**.
 - **Espaço reservado**: a faixa da dock é registrada como AppBar, então janelas maximizadas param acima dela, como paravam acima da barra nativa (cobrir a parte de baixo das janelas esconderia barras de status, rolagem horizontal e campos de mensagem). Em tela cheia (vídeo, jogo, apresentação) a dock some.
 - **Vidro**: a janela da dock é transparente; o desfoque do que está atrás vem de uma janela nativa logo abaixo dela, com o efeito de transparência do Windows.
 
@@ -88,7 +88,7 @@ Eventos para a página: `dock:items`, `dock:cfg`, `dock:theme` e `dock:hover`; c
 - **Apps elevados** (ex.: o Gerenciador de Tarefas): dá para focar, mas não minimizar pela dock, e enquanto um deles está em primeiro plano o Windows não deixa um app comum trocar o foco.
 - O botão ⌃ usa Win+B e Enter: se o menu de ícones ocultos estiver desligado nas configurações da barra, o Enter ativa o primeiro ícone da bandeja.
 - Apps que saem da barra pela API (`ITaskbarList::DeleteTab`) não têm estilo que os denuncie: ficam de fora as janelas "sempre no topo" sem barra de título e as que deixam o clique passar (como a própria ilha), mas algum caso raro pode aparecer na dock.
-- O desfoque arredonda com o canto nativo de 8 px do Windows (ele ignora a região da janela), por isso fica recuado 5 px da borda da dock.
+- O desfoque arredonda com o canto nativo de 8 px do Windows (ele ignora a região da janela), por isso o vidro da dock usa o mesmo canto de 8 px e o desfoque cobre exatamente o retângulo dele.
 - O ícone da Lixeira é lido ao abrir a dock (não troca na hora entre cheia e vazia).
 
 ## Galeria

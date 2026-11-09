@@ -3,7 +3,7 @@
  * nativa por baixo da dock (o backdrop-filter não enxerga a área de trabalho). */
 :root {
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --icon: 46px; /* Pequeno 38 / Médio 46 / Grande 54 (o Rust usa os mesmos) */
+  --icon: 32px; /* Pequeno 32 / Médio 40 / Grande 48 (o Rust usa os mesmos) */
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   color: #f5f5f7; -webkit-font-smoothing: antialiased;
 }
@@ -14,8 +14,10 @@ button { font: inherit; color: inherit; background: none; border: 0; outline: no
 /* ---------- barra flutuante de vidro (margem 10, espaço interno 7: ver DOCK_PAD/BOTTOM_GAP no Rust) */
 .dock {
   position: fixed; left: 50%; bottom: 10px; translate: -50% 0;
-  display: flex; align-items: flex-end; gap: 6px;
-  padding: 7px 9px; border-radius: 22px;
+  display: flex; align-items: flex-end; gap: 8px;
+  /* canto de 8 px = o canto nativo do Windows 11 que arredonda o desfoque por
+     baixo (escala com o DPI como o px CSS): um painel só, sem curva por fora */
+  padding: 7px 9px; border-radius: 8px;
   transition: translate .45s var(--ease), left .45s var(--ease);
 }
 /* o vidro fica num pseudo-elemento para a ampliação dos ícones não deformá-lo */
@@ -36,8 +38,9 @@ body[data-pos="left"] .dock { left: 12px; translate: 0 0; }
 
 .app { position: relative; width: var(--icon); height: var(--icon); display: grid; place-items: center;
        transform-origin: 50% 100%; transition: transform .18s var(--ease), margin .18s var(--ease); }
+/* o desenho ocupa 86% do botão: sobra respiro entre os ícones vizinhos */
 .app i {
-  width: 100%; height: 100%; border-radius: 24%; display: grid; place-items: center;
+  width: 86%; height: 86%; border-radius: 24%; display: grid; place-items: center;
   background: var(--bg); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 3px 8px rgba(0,0,0,.25);
 }
 .app svg { width: 52%; height: 52%; color: #fff; filter: drop-shadow(0 1px 1px rgba(0,0,0,.25)); }
@@ -59,7 +62,7 @@ body[data-pos="left"] .dock { left: 12px; translate: 0 0; }
   position: absolute; bottom: calc(100% + 12px); left: 50%; translate: -50% 4px; white-space: nowrap;
   /* mais opaca que no mockup: o desfoque de verdade só existe sob a dock */
   background: rgba(30,30,36,.92); border: 1px solid rgba(255,255,255,.1);
-  padding: 4px 9px; border-radius: 7px; font-size: 12px; opacity: 0; pointer-events: none;
+  padding: 4px 9px; border-radius: 6px; font-size: 12px; opacity: 0; pointer-events: none;
   transition: opacity .15s, translate .15s;
 }
 /* `.hov` vem do JS: quando a janela volta a deixar o clique passar, o :hover

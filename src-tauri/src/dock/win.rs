@@ -1310,7 +1310,7 @@ pub fn cursor() -> Option<(i32, i32)> {
 type IconReq = (Vec<Src>, mpsc::SyncSender<Option<String>>);
 static ICONS: OnceLock<Mutex<mpsc::Sender<IconReq>>> = OnceLock::new();
 
-/// Lado do ícone pedido ao shell, em px: cobre o maior ícone (54 px) com a
+/// Lado do ícone pedido ao shell, em px: cobre o maior ícone (48 px) com a
 /// ampliação forte numa tela a 125%.
 const ICON_PX: i32 = 128;
 

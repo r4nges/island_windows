@@ -39,8 +39,9 @@ mod stub;
 #[cfg(not(windows))]
 use stub as sys;
 
-/// Altura da janela da dock em px CSS: dock (até 54 + 14) + margem de 10 +
-/// ampliação forte (+60%) + dica, com sobra para a sombra.
+/// Altura da janela da dock em px CSS: dock (até 48 + 14) + margem de 10 +
+/// ampliação forte (+60%) + dica, com sobra para a sombra (o pior caso, Grande
+/// com Forte, chega a uns 155).
 const DOCK_H: f64 = 190.0;
 /// Margem entre a dock e o pé da tela, e folga acima dela na faixa reservada
 /// (px CSS; os mesmos de `ui/dock.css`).
@@ -48,13 +49,6 @@ const BOTTOM_GAP: f64 = 10.0;
 const TOP_GAP: f64 = 4.0;
 /// Espaço interno da dock acima e abaixo do ícone (px CSS)
 const DOCK_PAD: f64 = 7.0;
-/// Recuo do desfoque em relação à borda da dock (px CSS). O desfoque do DWM
-/// ignora a região da janela (`SetWindowRgn`): os cantos só arredondam pelo
-/// canto nativo do Windows 11, de 8 px. Recuado 5 px, esse retângulo de cantos
-/// de 8 px cabe dentro da curva de 22 px da dock (22 − 8 = 14; 14 × (1 − 1/√2)
-/// ≈ 4,1) e nenhum canto de desfoque aparece fora do vidro; sobra uma borda
-/// fina sem desfoque, que a tinta e o filete claro da dock já cobrem.
-const BLUR_INSET: f64 = 5.0;
 
 /// Botão da dock como a página o vê.
 #[derive(Serialize, Clone, PartialEq, Debug)]
@@ -429,9 +423,16 @@ pub async fn dock_layout(bar: Rect, hit: Rect) {
     let g = r.geo;
     let (ox, oy) = g.origin();
     let px = |v: f64| (v * g.scale).round() as i32;
-    let i = BLUR_INSET;
-    let glass = (bar.w > 2.0 * i && bar.h > 2.0 * i)
-        .then(|| (ox + px(bar.x + i), oy + px(bar.y + i), px(bar.w - 2.0 * i), px(bar.h - 2.0 * i)));
+    // O desfoque cobre exatamente o vidro, sem recuo. O desfoque do DWM ignora
+    // a região da janela (`SetWindowRgn`): os cantos só arredondam pelo canto
+    // nativo do Windows 11, de 8 px (que escala com o DPI, como o px CSS). Por
+    // isso o vidro da dock tem o mesmo raio de 8 px (`ui/dock.css`): tinta,
+    // filete e desfoque coincidem e não aparece um segundo painel por dentro.
+    // Arredonda as bordas, não a largura, para não sobrar 1 px de um lado.
+    let glass = (bar.w > 0.0 && bar.h > 0.0).then(|| {
+        let (l, t, r, b) = (px(bar.x), px(bar.y), px(bar.x + bar.w), px(bar.y + bar.h));
+        (ox + l, oy + t, r - l, b - t)
+    });
     r.engine.h.set_glass(glass);
 }
 

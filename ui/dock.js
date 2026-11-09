@@ -22,8 +22,8 @@
     up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7 14 5-5 5 5"/></svg>',
   };
   // padrão igual ao settings.rs (Taskbar); só vale até o Rust responder
-  const DEFAULT_CFG = { enabled: false, glass: "system", align: "center", size: "medium", magnify: "subtle", tray_button: true };
-  const SIZE = { small: 38, medium: 46, large: 54 };
+  const DEFAULT_CFG = { enabled: false, glass: "system", align: "center", size: "small", magnify: "subtle", tray_button: true };
+  const SIZE = { small: 32, medium: 40, large: 48 };
   // escala máxima extra do ícone sob o cursor (mockup: Leve 0.28, Forte 0.6)
   const MAG = { off: 0, subtle: 0.28, strong: 0.6 };
 
@@ -51,7 +51,7 @@
     B.dataset.glass = c.glass === "system" ? (S.light ? "light" : "dark") : c.glass;
     B.dataset.pos = c.align === "left" ? "left" : "center";
     B.dataset.tray = c.tray_button ? "on" : "off";
-    document.documentElement.style.setProperty("--icon", (SIZE[c.size] || 46) + "px");
+    document.documentElement.style.setProperty("--icon", (SIZE[c.size] || 32) + "px");
     resetMag();
     report(600); // a dock desliza até o lugar novo (.45 s)
   }
@@ -113,16 +113,19 @@
 
   // ------------------------------------------------------------ ampliação
   // escala pela distância do cursor (mesma curva do mockup); a margem extra
-  // abre espaço para os vizinhos e a dock cresce junto
+  // abre espaço para os vizinhos e a dock cresce junto. O ícone cresce
+  // (s − 1) × lado / 2 de cada lado (origem no meio do pé), então a margem é
+  // essa: o ampliado nunca encosta no vizinho
   function magnify(x) {
     const max = MAG[S.cfg.magnify] ?? 0.28, reach = 110;
     if (!max) return;
+    const side = SIZE[S.cfg.size] || 32;
     dock.querySelectorAll(".app").forEach((el) => {
       const r = el.getBoundingClientRect();
       const d = Math.abs(x - (r.left + r.width / 2));
       const s = 1 + max * Math.max(0, Math.cos(Math.min(1, d / reach) * Math.PI / 2));
       el.style.transform = `scale(${s.toFixed(3)})`;
-      el.style.margin = `0 ${((s - 1) * 14).toFixed(1)}px`;
+      el.style.margin = `0 ${((s - 1) * side / 2).toFixed(1)}px`;
     });
     report(250);
   }
@@ -161,7 +164,9 @@
       top = Math.min(top, a.top); left = Math.min(left, a.left); right = Math.max(right, a.right);
     });
     const q = (v) => Math.round(v * 2) / 2;
-    const bar = { x: q(r.left), y: q(r.top), w: q(r.width), h: q(r.height) };
+    // o vidro vai quase exato: o desfoque nativo tem de casar com ele px a px
+    const f = (v) => Math.round(v * 100) / 100;
+    const bar = { x: f(r.left), y: f(r.top), w: f(r.width), h: f(r.height) };
     const hit = { x: q(left), y: q(top), w: q(right - left), h: q(r.bottom - top) };
     const key = JSON.stringify([bar, hit]);
     if (key !== lastSent) { lastSent = key; fire("dock_layout", { bar, hit }); }

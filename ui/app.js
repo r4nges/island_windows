@@ -118,7 +118,7 @@
     muted_apps: [],
     fullscreen: "hide",
     hide_volume_osd: true,
-    taskbar: { enabled: false, glass: "system", align: "center", size: "medium", magnify: "subtle", tray_button: true },
+    taskbar: { enabled: false, glass: "system", align: "center", size: "small", magnify: "subtle", tray_button: true },
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */

@@ -107,7 +107,7 @@ pub struct Taskbar {
     pub glass: String,
     /// posição dos ícones: "center" | "left"
     pub align: String,
-    /// "small" | "medium" | "large" (ícones de 38, 46 e 54 px)
+    /// "small" | "medium" | "large" (ícones de 32, 40 e 48 px); pequeno por padrão
     pub size: String,
     /// ampliação ao passar o mouse: "off" | "subtle" | "strong"
     pub magnify: String,
@@ -121,7 +121,7 @@ impl Default for Taskbar {
             enabled: false,
             glass: "system".into(),
             align: "center".into(),
-            size: "medium".into(),
+            size: "small".into(),
             magnify: "subtle".into(),
             tray_button: true,
         }
@@ -146,9 +146,9 @@ impl Taskbar {
     /// Lado do ícone em px CSS (o mesmo `--icon` de `ui/dock.css`).
     pub fn icon_px(&self) -> f64 {
         match self.size.as_str() {
-            "small" => 38.0,
-            "large" => 54.0,
-            _ => 46.0,
+            "medium" => 40.0,
+            "large" => 48.0,
+            _ => 32.0,
         }
     }
 }
@@ -395,7 +395,7 @@ mod tests {
         let t = &s.taskbar;
         // desligada: ligar esconde a barra do Windows, então só por escolha do usuário
         assert!(!t.enabled);
-        assert_eq!((t.glass.as_str(), t.align.as_str(), t.size.as_str(), t.magnify.as_str()), ("system", "center", "medium", "subtle"));
+        assert_eq!((t.glass.as_str(), t.align.as_str(), t.size.as_str(), t.magnify.as_str()), ("system", "center", "small", "subtle"));
         assert!(t.tray_button);
         // bloco parcial: o que falta ganha o padrão
         let s: Settings = serde_json::from_str(r#"{"taskbar":{"enabled":true,"size":"large"}}"#).unwrap();
@@ -414,7 +414,7 @@ mod tests {
         s.taskbar.magnify = "max".into();
         s.sanitize();
         assert_eq!(s.taskbar, super::Taskbar::default());
-        for (v, px) in [("small", 38.0), ("medium", 46.0), ("large", 54.0)] {
+        for (v, px) in [("small", 32.0), ("medium", 40.0), ("large", 48.0)] {
             s.taskbar.size = v.into();
             s.sanitize();
             assert_eq!(s.taskbar.icon_px(), px);
