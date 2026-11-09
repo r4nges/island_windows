@@ -145,10 +145,14 @@
     const dpr = p.scale || 1;
     const H = p.height / dpr, W = p.width / dpr; // px lógicos, como no mockup
     const band = Math.max(110, H * 0.14);
-    const far = Math.hypot(W / 2, H - p.cy) + band * 1.5;
+    // centro da pílula no monitor (o Rust já somou onde a janela da ilha está)
+    const cx = Number.isFinite(p.cx) ? p.cx : W / 2, cy = Number.isFinite(p.cy) ? p.cy : 0;
+    // o anel termina além do canto da tela mais distante: no topo centralizado
+    // são os de baixo; na base, os de cima; num canto, o canto oposto
+    const far = Math.max(Math.hypot(cx, cy), Math.hypot(W - cx, cy), Math.hypot(cx, H - cy), Math.hypot(W - cx, H - cy)) + band * 1.5;
     gl.uniform2f(U.res, cv.width, cv.height);
     gl.uniform2f(U.tsz, cv.width, cv.height);
-    gl.uniform2f(U.c, cv.width / 2, p.cy * dpr);
+    gl.uniform2f(U.c, cx * dpr, cy * dpr);
     gl.uniform1f(U.band, band * dpr);
     gl.uniform1f(U.bulge, 0);
     gl.uniform1f(U.peak, PEAK[p.intensity] ?? PEAK.subtle);

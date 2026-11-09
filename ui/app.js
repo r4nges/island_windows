@@ -113,6 +113,7 @@
     usb_wave: { intensity: "subtle", duration: "fast", distortion: "light" },
     scale: 1.0,
     monitor: null,
+    position: "top-center",
     shortcuts: { open: "Ctrl+Alt+KeyI", play: "Ctrl+Alt+Space", pomo: "Ctrl+Alt+KeyP" },
     muted_apps: [],
     fullscreen: "hide",
@@ -124,9 +125,25 @@
 
   // ------------------------------------------------------------ geometria + molas
   const STAGE_W = 760, TOP = 6;
+  // altura do palco e, nos cantos, a distância da pílula à lateral (igual ao
+  // SIDE_GAP do main.rs, que encosta a janela na borda do monitor)
+  const STAGE_H = 500, EDGE = 12;
   const dpr = () => window.devicePixelRatio || 1;
   // arredonda no pixel físico: evita bordas borradas em 125%/150%
   const snap = (v) => Math.round(v * dpr()) / dpr();
+
+  // posição na tela (configurações): borda "top" | "bottom" e lado "left" |
+  // "center" | "right", espelhados em data-v/data-h no #stage para o CSS
+  const POSITIONS = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
+  let posV = "top", posH = "center";
+  /** canto esquerdo da pílula de largura w: centralizada ou a EDGE da lateral */
+  const pillX = (w) => (posH === "left" ? EDGE : posH === "right" ? STAGE_W - EDGE - w : (STAGE_W - w) / 2);
+  /** topo da pílula de altura h: a TOP da borda (colada nela no traço/escondida);
+   *  na base a pílula cresce para cima a partir de baixo */
+  const pillY = (h) => {
+    const gap = AT_EDGE.includes(mode) ? 0 : TOP;
+    return posV === "bottom" ? STAGE_H - gap - h : gap;
+  };
 
   class Spring {
     constructor(v, k, c) { this.v = v; this.t = v; this.vel = 0; this.k = k; this.c = c; }
@@ -144,7 +161,7 @@
 
   const SIZES = {
     peek: [72, 5, 2.5],
-    hidden: [180, 3, 1.5], // invisível; a largura é a área de "puxar" no topo
+    hidden: [180, 3, 1.5], // invisível; a largura é a área de "puxar" na borda (topo ou base)
     idle: [128, 30, 15],
     media: [280, 32, 16],
     timer: [260, 32, 16],
@@ -164,7 +181,7 @@
     stage.style.setProperty("--w", W + "px");
     stage.style.setProperty("--h", H + "px");
     stage.style.setProperty("--r", Math.max(0, Math.min(r, H / 2)).toFixed(2) + "px");
-    stage.style.setProperty("--x", snap((STAGE_W - W) / 2) + "px");
+    stage.style.setProperty("--x", snap(pillX(W)) + "px");
   }
 
   function frame(t) {
@@ -189,15 +206,35 @@
     if (!raf) { lastT = performance.now(); raf = requestAnimationFrame(frame); }
   }
 
-  // modos colados na borda de cima (app por baixo da ilha)
+  // modos colados na borda da tela, a de cima ou a de baixo (app por baixo da ilha)
   const AT_EDGE = ["peek", "hidden"];
-  let lastRect = "";
+  let lastRect = "", hitRect = null, stickyW = 0;
   function reportRect(w, h) {
-    const r = { x: (STAGE_W - w) / 2, y: AT_EDGE.includes(mode) ? 0 : TOP, w, h };
+    // aberta com o mouse em cima, a área do hover não encolhe na largura: um
+    // painel mais estreito que as abas (Conta, Wi-Fi…) não fecha a ilha debaixo
+    // do mouse que clicou no botão da ponta. Nos cantos à esquerda, com a pílula
+    // presa ao lado, isso aconteceria sempre; centralizada, por pouco não acontece
+    stickyW = mode === "expanded" && S.hover ? Math.max(stickyW, w) : 0;
+    w = Math.max(w, stickyW);
+    const r = { x: pillX(w), y: pillY(h), w, h };
+    hitRect = r;
     const key = Object.values(r).map((n) => n.toFixed(0)).join(",");
     if (key === lastRect) return;
     lastRect = key;
     fire("set_hit_rect", r);
+  }
+
+  /** Aplica a posição das configurações: atributos do CSS, --x da pílula e o
+   *  retângulo do hover. A janela quem move é o Rust (set_settings). */
+  function applyPosition() {
+    const p = POSITIONS.includes(cfg().position) ? cfg().position : "top-center";
+    const [v, h] = p.split("-");
+    if (v === posV && h === posH && stage.dataset.v) return;
+    posV = v; posH = h;
+    stage.dataset.v = v; stage.dataset.h = h;
+    if (DEMO) { document.body.dataset.v = v; document.body.dataset.h = h; } // o palco vai para o canto da página
+    applyGeometry(sw.v, sh.v, sr.v);
+    reportRect(Math.max(sw.t, sw.v), Math.max(sh.t, sh.v));
   }
 
   // ------------------------------------------------------------ modo / render
@@ -205,7 +242,7 @@
   function computeMode() {
     if (S.hover || S.drag || S.pinned) return "expanded";
     // app por baixo da ilha: traço visível, ou escondida (invisível, mas com uma
-    // faixa no topo que puxa a ilha ao encostar o mouse)
+    // faixa na borda, topo ou base, que puxa a ilha ao encostar o mouse)
     if (S.fullscreen) return cfg().fullscreen === "peek" ? "peek" : "hidden";
     if (S.hud) return S.hud.kind;
     if (S.pomo.running) return "timer";
@@ -218,6 +255,7 @@
   function render() {
     // o Rust só esconde o aviso de volume do Windows quando o HUD da ilha aparece
     if (hudBlocked() !== hudBlockedSent) { hudBlockedSent = hudBlocked(); fire("set_hud_blocked", { blocked: hudBlockedSent }); }
+    applyPosition();
     const m = computeMode();
     const [w, h, r] = targetSize(m);
     const key = `${m}:${w}x${h}`;
@@ -226,7 +264,7 @@
       ex.style.setProperty("--lw", w + "px");
       ex.style.setProperty("--lh", h + "px");
     }
-    mode = m; // antes do animateTo: reportRect usa o modo (o traço fica colado no topo)
+    mode = m; // antes do animateTo: reportRect usa o modo (o traço fica colado na borda)
     if (key !== sizeKey) { sizeKey = key; animateTo(w, h, r); }
     pill.dataset.mode = m;
     stage.dataset.mode = m; // a aura (irmã da pílula) muda o recuo com a ilha aberta
@@ -285,7 +323,13 @@
     }, v ? 90 : 320);
   }
   pill.addEventListener("mouseenter", () => setHover(true));
-  pill.addEventListener("mouseleave", () => setHover(false));
+  pill.addEventListener("mouseleave", (e) => {
+    // no app, a pílula que encolheu sob o mouse ainda está dentro da área do
+    // hover (ver reportRect): quem avisa a saída de verdade é o Rust
+    const s = stage.getBoundingClientRect(), r = hitRect, x = e.clientX - s.left, y = e.clientY - s.top;
+    if (!DEMO && r && x >= r.x - 4 && x <= r.x + r.w + 4 && y >= r.y - 4 && y <= r.y + r.h + 4) return;
+    setHover(false);
+  });
   listen("island:hover", (v) => setHover(v));
   listen("island:covered", (v) => {
     S.fullscreen = v;
@@ -631,10 +675,12 @@
     });
     const w = cfg().usb_wave || DEFAULT_CFG.usb_wave;
     if (w.intensity === "off") return;
-    // centro da pílula como estiver agora (o aviso já pediu o tamanho dela), em px lógicos
-    const cy = ((AT_EDGE.includes(mode) ? 0 : TOP) + sh.t / 2) * (cfg().scale || 1);
+    // centro da pílula como estiver agora (o aviso já pediu o tamanho dela), em px
+    // lógicos a partir do canto da janela; o Rust soma onde a janela está no monitor
+    const k = cfg().scale || 1;
+    const cx = (pillX(sw.t) + sw.t / 2) * k, cy = (pillY(sh.t) + sh.t / 2) * k;
     fire("play_wave", {
-      wave: { color: glowRgb(), intensity: w.intensity, duration: WAVE_MS[w.duration] ?? 1100, bulge: WAVE_BULGE[w.distortion] ?? 9, cy },
+      wave: { color: glowRgb(), intensity: w.intensity, duration: WAVE_MS[w.duration] ?? 1100, bulge: WAVE_BULGE[w.distortion] ?? 9, cx, cy },
     });
   }
   listen("island:usb", onUsb);
@@ -1265,6 +1311,19 @@
     </div>${missing ? `<div class="s-label">O monitor escolhido está desconectado; a ilha voltou para o principal.</div>` : ""}`;
   }
 
+  // posição: grade 3×2 que imita a tela, na ordem de POSITIONS (topo, depois base)
+  const POS_NAMES = { top: "Topo", bottom: "Base", left: "à esquerda", center: "no centro", right: "à direita" };
+  const posName = (p) => p.split("-").map((s) => POS_NAMES[s]).join(" ");
+  function positionPicker(cur) {
+    const p = POSITIONS.includes(cur) ? cur : "top-center";
+    const hint = p.startsWith("bottom") ? "Logo acima da barra de tarefas; abre para cima." : "Colada no topo da tela; abre para baixo.";
+    return `<div class="s-pos-row">
+      <div class="s-pos">${POSITIONS.map((v) =>
+        `<button class="${v === p ? "on" : ""}" data-pos="${v}" title="${posName(v)}"><i></i></button>`).join("")}</div>
+      <div class="s-pos-txt"><b>${posName(p)}</b>${hint}</div>
+    </div>`;
+  }
+
   // ---- atalhos globais: formato do global-hotkey ("Ctrl+Alt+KeyI") = KeyboardEvent.code
   const SHORTCUTS = [["open", "Abrir a ilha"], ["play", "Tocar/pausar"], ["pomo", "Pomodoro"]];
   // só nomes que não dependem do layout (no ABNT2 os símbolos mudam de lugar)
@@ -1360,6 +1419,8 @@
       <div class="sec">App por baixo da ilha</div>
       <div class="s-label">Tela cheia ou janela maximizada (ex.: as abas do navegador)</div>
       ${seg("fullscreen", FS_OPTS, c.fullscreen || "hide")}
+      <div class="sec">Posição</div>
+      ${positionPicker(c.position)}
       <div class="sec">Monitor</div>
       ${monitorChips(c.monitor)}
       <div class="sec">Atalhos</div>
@@ -1419,6 +1480,15 @@
     if (clr) { recording = clr.dataset.clear; return stopRecording(""); }
     const mon = e.target.closest("[data-monitor]");
     if (mon) return setCfg("monitor", mon.dataset.monitor || null, { now: true });
+    const pos = e.target.closest("[data-pos]");
+    if (pos) {
+      if (pos.dataset.pos === cfg().position) return;
+      // a ilha muda de lugar e sai de baixo do mouse: fica aberta nas
+      // configurações até o mouse chegar nela e sair (ou 10 s), para conferir
+      S.hover = false; clearTimeout(hoverTimer);
+      pinOpen("settings"); pinEntered = false;
+      return setCfg("position", pos.dataset.pos, { now: true });
+    }
     if (e.target.closest(".js-check-upd")) fire("check_update");
     if (e.target.closest(".js-install-upd")) installUpdate();
   });
@@ -1476,7 +1546,11 @@
     if (cmd === "list_monitors")
       return sleep(120, [{ id: "\\\\.\\DISPLAY1", width: 1920, height: 1080, primary: true }, { id: "\\\\.\\DISPLAY2", width: 2560, height: 1440, primary: false }]);
     if (cmd === "accent_color") return "#0078d4"; // azul padrão do Windows
-    if (cmd === "get_settings") return load("island.demo.cfg", null) || DEFAULT_CFG;
+    if (cmd === "get_settings") {
+      const c = load("island.demo.cfg", null) || DEFAULT_CFG;
+      const pos = new URLSearchParams(location.search).get("pos"); // ?pos=bottom-right etc.
+      return POSITIONS.includes(pos) ? { ...c, position: pos } : c;
+    }
     if (cmd === "set_settings") { save("island.demo.cfg", args.settings); document.body.style.zoom = args.settings.scale; return args.settings; }
     if (cmd === "pending_update") return new URLSearchParams(location.search).has("update") ? { version: "0.4.1", current: "0.4.0", notes: null } : null;
     return null;
@@ -1587,11 +1661,17 @@
       if (q.get("tab")) S.tab = q.get("tab");
     }
     document.body.style.zoom = cfg().scale; // no app quem faz isso é o zoom do WebView
+    // ?pos=bottom-right etc.: já no primeiro quadro (o get_settings do demo também
+    // a devolve, para não voltar ao topo quando ele responder)
+    if (POSITIONS.includes(q.get("pos"))) { S.cfg = { ...cfg(), position: q.get("pos") }; render(); }
     if (q.get("state") === "expanded") {
       S.hover = true; refreshExpanded();
       if (q.get("view")) { openView(q.get("view")); slowTick(); }
       render();
     }
     if (q.get("state") === "idle") { S.media.playing = false; render(); }
+    // ?hud=volume|toast: um HUD ou aviso parado na tela (screenshots)
+    if (q.get("hud") === "volume") { onFast({ volume: 0.64, muted, caps }); clearTimeout(hudTimer); }
+    if (q.get("hud") === "toast") { onUsb("SanDisk Ultra"); clearTimeout(hudTimer); }
   }
 })();

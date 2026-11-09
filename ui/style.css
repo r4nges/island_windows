@@ -94,6 +94,19 @@ img { display: block; }
 /* opção "esconder": invisível, mas continua ocupando a faixa do topo que puxa a ilha */
 .pill[data-mode="hidden"] { top: 0; opacity: 0; box-shadow: none; }
 
+/* ------------------------------------------------------------ posição na tela */
+/* O Rust encosta a janela no topo ou na base (logo acima da barra de tarefas) e
+   no centro ou num lado do monitor; o #stage recebe data-v (top|bottom) e
+   data-h (left|center|right). O --x da pílula vem do app.js (nos cantos, a 12 px
+   da lateral). Na base tudo que se ancora no topo passa para baixo: a pílula
+   cresce para cima, a aura e o grão a acompanham, e o traço/faixa ficam colados
+   na borda de baixo. */
+#stage[data-v="bottom"] .pill { top: auto; bottom: 6px; }
+#stage[data-v="bottom"] #aura { top: auto; bottom: 8px; }
+#stage[data-v="bottom"] #grain { top: auto; bottom: 0; }
+#stage[data-v="bottom"] .pill[data-mode="peek"] { bottom: 0; border-radius: 3px 3px 0 0; }
+#stage[data-v="bottom"] .pill[data-mode="hidden"] { bottom: 0; }
+
 /* ------------------------------------------------------------ camadas */
 .layer {
   position: absolute; top: 0; left: calc(50% - var(--lw) / 2); z-index: 1;
@@ -103,6 +116,11 @@ img { display: block; }
   pointer-events: none;
   transition: opacity 0.16s ease, filter 0.2s ease, transform 0.3s var(--ease);
 }
+/* cada camada fica presa ao canto de onde a pílula cresce: enquanto a mola abre,
+   o conteúdo surge a partir da borda da tela em vez de deslizar junto */
+#stage[data-v="bottom"] .layer { top: auto; bottom: 0; }
+#stage[data-h="left"] .layer { left: 0; }
+#stage[data-h="right"] .layer { left: auto; right: 0; }
 .pill[data-mode="media"]    .l-media,
 .pill[data-mode="timer"]    .l-timer,
 .pill[data-mode="volume"]   .l-volume,
@@ -179,6 +197,9 @@ circle { fill: none; stroke-linecap: round; }
 .chev { width: 7px; height: 7px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); margin: 0 4px 0 4px; }
 .in-panel .tabs { display: none; }
 .in-panel .back { display: flex; }
+/* na base o cabeçalho (abas, voltar, status) desce para a borda de baixo: fica
+   onde a pílula compacta estava e o mouse entrou, e o conteúdo abre por cima */
+#stage[data-v="bottom"] .x-head { position: absolute; left: 18px; right: 18px; bottom: 12px; }
 
 .x-status { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--dim); }
 .st { display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 7px; border-radius: 9px; transition: background .2s, color .2s; }
@@ -196,9 +217,12 @@ circle { fill: none; stroke-linecap: round; }
 
 .view {
   position: absolute; left: 18px; right: 18px; top: 50px; bottom: 16px;
-  opacity: 0; transform: translateY(6px); filter: blur(4px); pointer-events: none; visibility: hidden;
+  opacity: 0; transform: translateY(var(--view-dy, 6px)); filter: blur(4px); pointer-events: none; visibility: hidden;
   transition: opacity .2s ease, transform .35s var(--ease), filter .25s ease, visibility 0s .35s;
 }
+/* espelho da base: o conteúdo fica entre a borda de cima e o cabeçalho e entra
+   vindo de cima (a variável não briga com o transform: none da vista aberta) */
+#stage[data-v="bottom"] .view { top: 16px; bottom: 50px; --view-dy: -6px; }
 .pill[data-panel="media"]   .v-media,
 .pill[data-panel="system"]  .v-system,
 .pill[data-panel="focus"]   .v-focus,
@@ -502,6 +526,26 @@ circle { fill: none; stroke-linecap: round; }
   -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,.6);
 }
+/* posição: uma tela em miniatura (com a barra de tarefas embaixo) dividida em
+   3×2; cada casa mostra a pílula no canto que ela representa */
+.s-pos-row { display: flex; align-items: center; gap: 14px; padding: 0 10px; margin-bottom: 4px; }
+.s-pos {
+  position: relative; flex: none; width: 168px; height: 98px; padding: 4px 4px 11px; border-radius: 11px;
+  display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr; gap: 3px;
+  background: rgba(255,255,255,.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1);
+}
+.s-pos::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: 4px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.14); }
+.s-pos button { display: flex; padding: 5px 6px; border-radius: 7px; transition: background .2s; }
+.s-pos button:hover { background: rgba(255,255,255,.07); }
+.s-pos button.on { background: rgba(255,255,255,.12); }
+.s-pos i { width: 26px; height: 7px; border-radius: 4px; background: rgba(255,255,255,.28); transition: background .2s, box-shadow .2s; }
+.s-pos button:hover i { background: rgba(255,255,255,.5); }
+.s-pos button.on i { background: #fff; box-shadow: 0 0 8px rgba(255,255,255,.35); }
+.s-pos [data-pos$="-center"] { justify-content: center; }
+.s-pos [data-pos$="-right"] { justify-content: flex-end; }
+.s-pos [data-pos^="bottom"] { align-items: flex-end; }
+.s-pos-txt { min-width: 0; font-size: 12px; color: var(--dim); line-height: 1.4; }
+.s-pos-txt b { display: block; color: var(--txt); font-size: 12.5px; font-weight: 600; margin-bottom: 2px; }
 .s-app { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-dis { opacity: .45; }
 .s-key { cursor: default; height: auto; min-height: 34px; padding-top: 3px; padding-bottom: 3px; }
@@ -568,6 +612,16 @@ body.demo #stage::before {
   font-size: 12px; color: rgba(255,255,255,.7); background: rgba(0,0,0,.35); padding: 8px 14px; border-radius: 12px;
   backdrop-filter: blur(12px); white-space: nowrap;
 }
+/* ?pos= no demo: o palco faz o papel da janela, encostado no canto da página
+   como o Rust a encostaria no monitor; na base, sobre uma barra de tarefas falsa */
+body.demo[data-h="left"] #stage { margin-left: 0; }
+body.demo[data-h="right"] #stage { margin-right: 0; }
+body.demo[data-v="bottom"] #stage { position: absolute; left: 0; right: 0; bottom: 48px; }
+body.demo[data-v="bottom"]::after {
+  content: ""; position: fixed; left: 0; right: 0; bottom: 0; height: 48px;
+  background: rgba(28, 28, 32, .82); border-top: 1px solid rgba(255,255,255,.08); backdrop-filter: blur(20px);
+}
+body.demo[data-v="bottom"] #demo-hint { bottom: auto; top: 18px; }
 kbd { font: inherit; font-size: 11px; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.14); }
 
 /* notificações */

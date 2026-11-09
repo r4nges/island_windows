@@ -37,6 +37,9 @@ struct Shared {
     zoom: Mutex<f64>,
     /// monitor escolhido nas configurações (`None` = principal)
     monitor: Mutex<Option<String>>,
+    /// posição da ilha no monitor (`settings::anchor`): (na base?, lado -1/0/1);
+    /// o padrão (false, 0) é o topo centralizado
+    anchor: Mutex<(bool, i32)>,
     /// esconder o aviso de volume do Windows (`hide_volume_osd` com o aviso `volume` ligado)
     hide_osd: AtomicBool,
     /// a página não mostraria o HUD agora (mouse em cima, fixada, arrastando
@@ -87,6 +90,9 @@ struct SettingsState {
 
 const BASE_W: f64 = 760.0;
 const BASE_H: f64 = 500.0;
+/// Distância da pílula à borda lateral da tela nos cantos, em px CSS; igual ao
+/// `EDGE` do app.js. A janela encosta na borda e a pílula fica a isso dela.
+const SIDE_GAP: f64 = 12.0;
 
 #[derive(Serialize, Clone)]
 struct Fast {
@@ -248,7 +254,9 @@ struct WaveReq {
     duration: u32,
     /// deslocamento máximo do vidro, px CSS (0 = sem distorção, sem captura)
     bulge: f64,
-    /// centro vertical da pílula, px lógicos a partir do topo do monitor
+    /// centro da pílula, px lógicos a partir do canto de cima à esquerda da
+    /// janela da ilha (o `play_wave` soma onde a janela está no monitor)
+    cx: f64,
     cy: f64,
 }
 
@@ -259,6 +267,8 @@ struct WavePlay {
     intensity: String,
     duration: u32,
     bulge: f64,
+    /// centro da pílula, px lógicos a partir do canto de cima à esquerda do monitor
+    cx: f64,
     cy: f64,
     /// tamanho da janela da onda em px físicos (o monitor menos 1 px) e a escala dele
     width: u32,
@@ -304,6 +314,16 @@ async fn play_wave(app: AppHandle, wave: WaveReq) -> Result<(), String> {
         return Ok(());
     };
     let (pos, size) = (*m.position(), *m.size());
+    // a página manda o centro relativo à própria janela; a onda cobre o monitor
+    // e a janela pode estar na base ou num canto dele
+    let sf = m.scale_factor();
+    let (ox, oy) = main
+        .outer_position()
+        .map(|p| ((p.x - pos.x) as f64 / sf, (p.y - pos.y) as f64 / sf))
+        .unwrap_or((0.0, 0.0));
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let cx = (ox + finite(wave.cx)).clamp(0.0, size.width as f64 / sf);
+    let cy = (oy + finite(wave.cy)).clamp(0.0, size.height as f64 / sf);
     let duration = wave.duration.clamp(300, 6000);
     let bulge = if wave.bulge.is_finite() { wave.bulge.clamp(0.0, 40.0) } else { 0.0 };
 
@@ -334,10 +354,11 @@ async fn play_wave(app: AppHandle, wave: WaveReq) -> Result<(), String> {
             intensity: if wave.intensity == "medium" { "medium".into() } else { "subtle".into() },
             duration,
             bulge: if capture { bulge } else { 0.0 },
-            cy: wave.cy.clamp(0.0, 400.0),
+            cx,
+            cy,
             width: size_wave.width,
             height: size_wave.height,
-            scale: m.scale_factor(),
+            scale: sf,
             capture,
             at,
         },
@@ -413,7 +434,12 @@ fn set_settings(
     if let Some(w) = app.get_webview_window("main") {
         if old.monitor != s.monitor {
             *shared.monitor.lock().unwrap() = s.monitor.clone();
-            place_top_center(&w, &shared);
+            place_island(&w, &shared);
+        }
+        // a página já redesenhou a pílula na posição nova; aqui só a janela muda
+        if old.position != s.position {
+            *shared.anchor.lock().unwrap() = settings::anchor(&s.position);
+            place_island(&w, &shared);
         }
         if (old.scale - s.scale).abs() > f64::EPSILON {
             apply_scale(&w, &shared, s.scale);
@@ -430,7 +456,7 @@ fn apply_scale(win: &WebviewWindow, shared: &Shared, scale: f64) {
     *shared.zoom.lock().unwrap() = scale;
     let _ = win.set_size(LogicalSize::new(BASE_W * scale, BASE_H * scale));
     let _ = win.set_zoom(scale);
-    place_top_center(win, shared);
+    place_island(win, shared);
 }
 
 #[derive(Serialize)]
@@ -495,20 +521,55 @@ fn target_monitor(win: &WebviewWindow, shared: &Shared) -> Option<tauri::Monitor
     .or_else(|| win.current_monitor().ok().flatten())
 }
 
-/// Posição (física) que a janela deve ocupar: topo, centralizada no monitor.
-/// A largura sai da escala do monitor de destino, não do tamanho atual: ao
+/// Posição (física) que a janela deve ocupar no monitor, conforme a posição
+/// escolhida: encostada no topo ou na base e centralizada ou encostada num lado.
+/// Usa a área de trabalho (sem a barra de tarefas): na base a ilha fica logo
+/// acima dela. A pílula fica a 6 px da borda de cima/baixo e, nos cantos, a
+/// `SIDE_GAP` da lateral; isso o CSS resolve dentro da janela.
+/// O tamanho sai da escala do monitor de destino, não do tamanho atual: ao
 /// trocar para um monitor com outro DPI o Windows redimensiona a janela.
 fn target_position(win: &WebviewWindow, shared: &Shared) -> Option<PhysicalPosition<i32>> {
     let m = target_monitor(win, shared)?;
-    let w = (BASE_W * shared.zoom() * m.scale_factor()).round() as i32;
-    let x = m.position().x + (m.size().width as i32 - w) / 2;
-    Some(PhysicalPosition::new(x, m.position().y))
+    let k = shared.zoom() * m.scale_factor();
+    let (w, h) = ((BASE_W * k).round() as i32, (BASE_H * k).round() as i32);
+    let wa = m.work_area();
+    let (ax, ay) = (wa.position.x, wa.position.y);
+    let (aw, ah) = (wa.size.width as i32, wa.size.height as i32);
+    let (bottom, side) = *shared.anchor.lock().unwrap();
+    let x = match side {
+        -1 => ax,
+        1 => ax + aw - w,
+        _ => ax + (aw - w) / 2,
+    };
+    let y = if bottom { ay + ah - h } else { ay };
+    Some(PhysicalPosition::new(x, y))
 }
 
-fn place_top_center(win: &WebviewWindow, shared: &Shared) {
+fn place_island(win: &WebviewWindow, shared: &Shared) {
     if let Some(p) = target_position(win, shared) {
         let _ = win.set_position(p);
     }
+}
+
+/// Área da pílula compacta com folga (a largura do maior aviso, 340 px CSS, e
+/// 44 px de altura), em px físicos da tela, para saber se um app está por baixo
+/// da ilha. Segue a posição: faixa no topo ou na base da janela; centralizada ou,
+/// nos cantos, saindo da lateral da janela (a pílula fica a `SIDE_GAP` dela).
+/// `k` = px físicos por px CSS (escala do monitor × zoom da ilha).
+fn pill_zone(p: PhysicalPosition<i32>, sz: PhysicalSize<u32>, k: f64, (bottom, side): (bool, i32)) -> (i32, i32, i32, i32) {
+    let (w, h) = (sz.width as i32, sz.height as i32);
+    let reach = ((SIDE_GAP + 340.0) * k) as i32;
+    let (l, r) = match side {
+        -1 => (p.x, p.x + reach),
+        1 => (p.x + w - reach, p.x + w),
+        _ => {
+            let (cx, half) = (p.x + w / 2, (170.0 * k) as i32);
+            (cx - half, cx + half)
+        }
+    };
+    let band = (44.0 * k) as i32;
+    let (t, b) = if bottom { (p.y + h - band, p.y + h) } else { (p.y, p.y + band) };
+    (l, t, r, b)
 }
 
 /// ~30 Hz: hover/click-through, volume (vindo do callback), Caps Lock,
@@ -582,19 +643,16 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>, vol: plat
 
             // app cobrindo a ilha (tela cheia, ou janela maximizada/grande por
             // baixo dela, ex.: abas do navegador): o frontend esconde a pílula
-            // (fica uma faixa invisível no topo para puxá-la) ou a reduz a um
-            // traço. Só tela cheia exclusiva (jogo D3D, apresentação) some de
+            // (fica uma faixa invisível na borda da tela, topo ou base, para
+            // puxá-la) ou a reduz a um traço. Só tela cheia exclusiva (jogo D3D, apresentação) some de
             // verdade. ~330 ms para reagir rápido a maximizar/Alt+Tab.
             if tick % 10 == 0 {
                 let (fs, exclusive) = fast.fullscreen();
                 shared.fullscreen.store(fs, Ordering::Relaxed);
                 let cov = match (win.outer_position(), win.outer_size(), win.scale_factor()) {
                     (Ok(p), Ok(sz), Ok(sf)) => {
-                        // área da pílula compacta (com folga), em px físicos
-                        let k = sf * shared.zoom();
-                        let cx = p.x + sz.width as i32 / 2;
-                        let half = (170.0 * k) as i32;
-                        fast.covering(own_hwnd, (cx - half, p.y, cx + half, p.y + (44.0 * k) as i32))
+                        let zone = pill_zone(p, sz, sf * shared.zoom(), *shared.anchor.lock().unwrap());
+                        fast.covering(own_hwnd, zone)
                     }
                     _ => Some(false),
                 };
@@ -867,7 +925,7 @@ fn autostart_first_run(app: &tauri::App) {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let auto = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, autostart_on, None::<&str>)?;
-    let center = MenuItem::with_id(app, "center", "Recentralizar", true, None::<&str>)?;
+    let center = MenuItem::with_id(app, "center", "Reposicionar", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "Recarregar visual", true, None::<&str>)?;
     let prefs = MenuItem::with_id(app, "settings", "Configurações", true, None::<&str>)?;
     let upd = MenuItem::with_id(app, "update", "Procurar atualizações", true, None::<&str>)?;
@@ -885,7 +943,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => app.exit(0),
             "center" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    place_top_center(&w, &app.state::<Arc<Shared>>());
+                    place_island(&w, &app.state::<Arc<Shared>>());
                 }
             }
             "reload" => {
@@ -933,9 +991,9 @@ fn main() {
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
 
-            let file = settings::path(&app.path().app_config_dir()?);
-            let prefs = settings::load(&file);
+            let file = settings::path(&app.path().app_config_dir()?);            let prefs = settings::load(&file);
             *shared.monitor.lock().unwrap() = prefs.monitor.clone();
+            *shared.anchor.lock().unwrap() = settings::anchor(&prefs.position);
             shared.hide_osd.store(prefs.hide_volume_osd && prefs.modules.volume, Ordering::Relaxed);
             apply_scale(&win, &shared, prefs.scale);
             shortcuts::apply(app.handle(), &prefs.shortcuts);

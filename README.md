@@ -32,13 +32,14 @@ Dynamic Island para Windows 11: uma pílula preta no topo da tela que se transfo
 - **Aura**: intensidade (Desligada, Sutil ou Média), se aparece com a ilha aberta e a cor: automática (a cor da capa do álbum), **Sistema** (a cor de destaque do Windows, que acompanha na hora quando você a troca nas Configurações do Windows), predefinidas ou um seletor de matiz.
 - **Aura ao conectar USB**: intensidade da onda (Desligada, Sutil ou Média), duração (Rápida, Normal ou Lenta) e distorção do vidro (Desligada, Leve ou Forte). A cor é a mesma da aura. Desligar a onda não desliga o aviso, que tem a sua própria chave em **Avisos**.
 - **Tamanho da ilha**: 90%, 100% ou 110%.
-- **App por baixo da ilha**: quando há um app em tela cheia ou uma janela maximizada por baixo da ilha (por exemplo, as abas do navegador), a ilha some e fica invisível, mas dá para puxá-la deixando o mouse parado na borda de cima da tela. Se preferir, escolha **Deixar um traço** no lugar.
+- **App por baixo da ilha**: quando há um app em tela cheia ou uma janela maximizada por baixo da ilha (por exemplo, as abas do navegador), a ilha some e fica invisível, mas dá para puxá-la deixando o mouse parado na borda da tela onde ela fica (em cima, ou embaixo com a ilha na base). Se preferir, escolha **Deixar um traço** no lugar.
+- **Posição**: uma grade 3×2 que imita a tela. No **topo** ou na **base** (logo acima da barra de tarefas), à esquerda, no centro (padrão) ou à direita. Na base a ilha abre para cima em todos os estados (avisos, painéis, configurações, estante), com as abas e o relógio na borda de baixo; nos cantos ela fica a 12 px da lateral e cresce para dentro da tela. A onda do USB sai de onde a ilha estiver e vai até o canto mais distante. Vale na hora, sem reiniciar.
 - **Monitor**: em qual tela a ilha aparece.
 - **Atalhos globais**, regraváveis: `Ctrl+Alt+I` abre/fecha a ilha, `Ctrl+Alt+Espaço` dá play/pause e `Ctrl+Alt+P` inicia o pomodoro.
 - **Avisos**: liga/desliga cada tipo (volume, brilho, Caps Lock, bateria, internet, nova música, texto copiado, notificações, som do pomodoro, USB conectado) e silencia notificações app por app.
 - **Esconder o aviso de volume do Windows**: ligado por padrão (só vale com o aviso de Volume ligado).
 
-Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Configurações**, **Iniciar com o Windows**, **Recentralizar**, **Recarregar visual**, **Procurar atualizações** e **Sair**. **Iniciar com o Windows** vem ligado: o Island ativa sozinho na primeira execução e, se você desligar pela bandeja, a escolha vale também nas atualizações.
+Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Configurações**, **Iniciar com o Windows**, **Reposicionar**, **Recarregar visual**, **Procurar atualizações** e **Sair**. **Iniciar com o Windows** vem ligado: o Island ativa sozinho na primeira execução e, se você desligar pela bandeja, a escolha vale também nas atualizações.
 
 O Island se atualiza sozinho: procura versão nova ao iniciar e a cada 6 horas. Quando encontra, mostra um aviso (com as notas da versão) e um botão verde com a versão no topo da ilha expandida; um clique baixa, instala e reabre o app.
 
@@ -127,7 +128,7 @@ A chave privada fica em `~\.tauri\island.key` (com a senha em `island.key.passwo
 Abra `ui\index.html` no navegador: roda em modo demo com dados falsos.
 Teclas: `V` volume, `M` mudo, `K` Caps Lock, `L` brilho, `C` copiar, `B` carregador, `W` Wi-Fi, `N` próxima faixa, `P` pomodoro, `D` soltar arquivos, `E` expandir, `T` notificação, `U` atualização disponível, `S` configurações, `O` abrir (como o atalho global), `F` simula um app por baixo da ilha, `X` USB conectado (só o aviso: a onda precisa do app), `Espaço` play/pause.
 
-Parâmetros na URL: `?clean` esconde a dica; `?state=expanded&tab=<media|system|focus|clip|notif|shelf>&view=<cpu|ram|gpu|net|wifi|battery|clock|settings|user>` abre num estado fixo; `?seed=1` enche clipboard e estante; `?update` simula uma atualização pendente.
+Parâmetros na URL: `?clean` esconde a dica; `?state=expanded&tab=<media|system|focus|clip|notif|shelf>&view=<cpu|ram|gpu|net|wifi|battery|clock|settings|user>` abre num estado fixo; `?seed=1` enche clipboard e estante; `?update` simula uma atualização pendente; `?pos=<top-left|top-center|top-right|bottom-left|bottom-center|bottom-right>` põe a ilha nessa posição (a página faz o papel da tela, com uma barra de tarefas falsa na base); `?hud=<volume|toast>` deixa um HUD de volume ou o aviso de USB parado na tela.
 
 ## Onde mexer
 
@@ -155,6 +156,7 @@ Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configur
 - **Brilho** só funciona na tela interna de notebook (a tela interna é detectada pelo WMI; as mudanças chegam pelo aviso de energia do Windows e pelo evento do WMI, o que vier primeiro): monitores externos e desktops não mostram o HUD de brilho.
 - **Aviso de brilho do Windows**: continua aparecendo junto do HUD de brilho da ilha (só o aviso de volume é escondido).
 - **Aviso de volume do Windows**: o Island o esconde enquanto mostra o próprio HUD de volume, mas isso depende de detalhes internos e não documentados do shell do Windows (testado no Windows 11 build 26300). Uma atualização do Windows pode quebrar o truque; nesse caso o aviso nativo simplesmente volta a aparecer junto do HUD. Também pode piscar por um quadro antes de sumir. Dá para desligar em Configurações → Esconder o aviso de volume do Windows.
+- **Posição na base**: a ilha fica logo acima da área de trabalho do monitor, que o Windows calcula sem a barra de tarefas. Com a barra em ocultar automaticamente, essa área vai até a borda da tela e a ilha fica por cima da barra quando ela aparece. Com a barra numa lateral (ou no topo, com ferramentas de terceiros), a ilha respeita a área de trabalho, mas não foi testada assim. Uma barra flutuante que não reserva espaço no Windows também não é levada em conta.
 - **Onda do USB**: a distorção usa uma foto da tela tirada no instante do plugue. Vídeo protegido por DRM (Netflix, Prime Video e afins no navegador) sai preto nessa foto, então no anel ele aparece como um borrão escuro por um instante; por isso, e para não atrapalhar jogo, vídeo ou apresentação, a onda não toca com app em tela cheia. Dentro do anel a imagem é a da foto (parada); fora dele a tela continua normal. Se incomodar, deixe a distorção em Desligada: a onda fica só com o brilho e não captura nada.
 
 ## Consumo

@@ -106,6 +106,9 @@ pub struct Settings {
     pub scale: f64,
     /// nome do monitor (ex.: `\\.\DISPLAY2`); `None` = principal
     pub monitor: Option<String>,
+    /// onde a ilha fica no monitor: borda + lado, um dos `POSITIONS`
+    /// (ex.: "bottom-right"); na base ela abre para cima
+    pub position: String,
     pub shortcuts: Shortcuts,
     /// apps cujas notificações não viram aviso na ilha (continuam na aba)
     pub muted_apps: Vec<String>,
@@ -124,6 +127,7 @@ impl Default for Settings {
             usb_wave: UsbWave::default(),
             scale: 1.0,
             monitor: None,
+            position: "top-center".into(),
             shortcuts: Shortcuts::default(),
             muted_apps: Vec::new(),
             fullscreen: "hide".into(),
@@ -134,6 +138,21 @@ impl Default for Settings {
 
 pub const SCALES: [f64; 3] = [0.9, 1.0, 1.1];
 
+/// Posições da ilha: topo ou base, à esquerda, no centro ou à direita.
+pub const POSITIONS: [&str; 6] = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
+
+/// `position` desmontada para quem posiciona a janela: (na base?, lado), com
+/// lado -1 = esquerda, 0 = centro, 1 = direita. Espera um valor já corrigido
+/// pelo `sanitize`; qualquer outro cai no topo centralizado.
+pub fn anchor(position: &str) -> (bool, i32) {
+    match position.split_once('-') {
+        Some((v, h)) if POSITIONS.contains(&position) => {
+            (v == "bottom", match h { "left" => -1, "right" => 1, _ => 0 })
+        }
+        _ => (false, 0),
+    }
+}
+
 impl Settings {
     /// Corrige valores fora do esperado (arquivo editado à mão, versão antiga).
     pub fn sanitize(&mut self) {
@@ -143,6 +162,10 @@ impl Settings {
             .copied()
             .min_by(|a, b| (a - s).abs().total_cmp(&(b - s).abs()))
             .unwrap_or(1.0);
+        // posição desconhecida (versão futura, arquivo editado à mão) volta ao padrão
+        if !POSITIONS.contains(&self.position.as_str()) {
+            self.position = "top-center".into();
+        }
         if !["off", "subtle", "medium"].contains(&self.aura.intensity.as_str()) {
             self.aura.intensity = "subtle".into();
         }
@@ -224,6 +247,45 @@ mod tests {
     fn config_antiga_sem_cor_continua_auto() {
         let s: Settings = serde_json::from_str(r#"{"aura":{"intensity":"medium"}}"#).unwrap();
         assert_eq!(s.aura.color, "auto");
+    }
+
+    #[test]
+    fn config_antiga_sem_posicao_fica_no_topo_centralizada() {
+        let mut s: Settings = serde_json::from_str(r#"{"scale":1.1,"monitor":"\\\\.\\DISPLAY2"}"#).unwrap();
+        s.sanitize();
+        assert_eq!(s.position, "top-center");
+        assert_eq!(s.monitor.as_deref(), Some(r"\\.\DISPLAY2"));
+    }
+
+    #[test]
+    fn posicao_invalida_volta_ao_topo_centralizada() {
+        for bad in ["", "bottom", "Bottom-Left", "middle-center", "bottom-centre", " top-left"] {
+            let mut s = Settings::default();
+            s.position = bad.into();
+            s.sanitize();
+            assert_eq!(s.position, "top-center", "{bad:?}");
+        }
+        // as seis válidas ficam como estão
+        for ok in super::POSITIONS {
+            let mut s = Settings::default();
+            s.position = ok.into();
+            s.sanitize();
+            assert_eq!(s.position, ok);
+        }
+    }
+
+    #[test]
+    fn ancora_da_posicao() {
+        use super::anchor;
+        assert_eq!(anchor("top-center"), (false, 0));
+        assert_eq!(anchor("top-left"), (false, -1));
+        assert_eq!(anchor("top-right"), (false, 1));
+        assert_eq!(anchor("bottom-left"), (true, -1));
+        assert_eq!(anchor("bottom-center"), (true, 0));
+        assert_eq!(anchor("bottom-right"), (true, 1));
+        // sem passar pelo sanitize, um valor estranho não vira base nem lado
+        assert_eq!(anchor("bottom-middle"), (false, 0));
+        assert_eq!(anchor("bottom"), (false, 0));
     }
 
     #[test]
