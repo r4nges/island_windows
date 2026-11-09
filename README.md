@@ -38,10 +38,56 @@ Dynamic Island para Windows 11: uma pílula preta no topo da tela que se transfo
 - **Atalhos globais**, regraváveis: `Ctrl+Alt+I` abre/fecha a ilha, `Ctrl+Alt+Espaço` dá play/pause e `Ctrl+Alt+P` inicia o pomodoro.
 - **Avisos**: liga/desliga cada tipo (volume, brilho, Caps Lock, bateria, internet, nova música, texto copiado, notificações, som do pomodoro, USB conectado) e silencia notificações app por app.
 - **Esconder o aviso de volume do Windows**: ligado por padrão (só vale com o aviso de Volume ligado).
+- **Barra de tarefas**: troca a barra do Windows por uma dock flutuante de vidro (desligada por padrão; veja [Barra de tarefas](#barra-de-tarefas-dock)).
 
 Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Configurações**, **Iniciar com o Windows**, **Reposicionar**, **Recarregar visual**, **Procurar atualizações** e **Sair**. **Iniciar com o Windows** vem ligado: o Island ativa sozinho na primeira execução e, se você desligar pela bandeja, a escolha vale também nas atualizações.
 
 O Island se atualiza sozinho: procura versão nova ao iniciar e a cada 6 horas. Quando encontra, mostra um aviso (com as notas da versão) e um botão verde com a versão no topo da ilha expandida; um clique baixa, instala e reabre o app.
+
+## Barra de tarefas (dock)
+
+Com **Configurações → Barra de tarefas → Barra flutuante do Island** ligado, o Island desenha a própria barra de tarefas, uma dock de vidro flutuando no pé do monitor principal, e esconde a barra do Windows. Ela não tem relógio, Wi-Fi nem bateria: a ilha já mostra isso.
+
+- **Itens**: Iniciar (tecla Win), Pesquisar (Win+S), os apps fixados na barra do Windows (na mesma ordem, inclusive apps da Store) e os apps abertos com os **ícones reais**, ⌃ para os ícones ocultos da bandeja (Win+B e Enter, que funciona com a barra escondida) e a Lixeira.
+- **Apps abertos**: o mesmo filtro da barra nativa (janelas visíveis, sem dono, sem `WS_EX_TOOLWINDOW`, fora de outra área de trabalho virtual), agrupadas pelo AppUserModelID ou pelo exe e juntadas ao fixado correspondente. Ponto embaixo = aberto; mais largo = em foco. A lista se atualiza por evento (`SetWinEventHook`), sem polling.
+- **Cliques**: app fechado abre; com uma janela, foca (ou minimiza, se já está em foco); com várias, alterna entre elas. A dica mostra o nome e quantas janelas há.
+- **Opções** (valem na hora): **Vidro** Sistema (segue o tema claro/escuro dos apps e acompanha a troca), Escuro, Claro ou Transparente; **Posição dos ícones** Centro ou Esquerda; **Tamanho** Pequeno, Médio ou Grande (38, 46 ou 54 px); **Ampliar ao passar o mouse** Não, Leve ou Forte; **Botão de ícones ocultos (⌃)**.
+- **Espaço reservado**: a faixa da dock é registrada como AppBar, então janelas maximizadas param acima dela, como paravam acima da barra nativa (cobrir a parte de baixo das janelas esconderia barras de status, rolagem horizontal e campos de mensagem). Em tela cheia (vídeo, jogo, apresentação) a dock some.
+- **Vidro**: a janela da dock é transparente; o desfoque do que está atrás vem de uma janela nativa logo abaixo dela, com o efeito de transparência do Windows.
+
+### Como a barra do Windows volta
+
+O Island só esconde a janela da barra principal (`Shell_TrayWnd`): não muda nenhuma configuração do Windows (nem o "ocultar automaticamente", nem o registro). A barra volta:
+
+- ao desligar o módulo e ao sair do Island;
+- se o Island travar ou for encerrado à força: junto com a dock sobe um processo vigia (o próprio `island.exe --taskbar-watchdog`, parado esperando o Island terminar, sem gastar CPU) que mostra a barra assim que o Island some;
+- se o vigia morrer junto (ex.: `taskkill /im island.exe /f`, que pega os dois pelo nome), no próximo início do Island (o arquivo `taskbar-restore.json` em `%APPDATA%\dev.r4nges.island` marca que ela ficou escondida) ou ao reiniciar o Explorer ou o PC;
+- se o Explorer reiniciar com o módulo ligado, a barra nova é escondida de novo e a faixa é reservada outra vez.
+
+### Threads e janelas da dock
+
+Só existem com o módulo ligado.
+
+| Peça | O que faz | Ritmo |
+|---|---|---|
+| janela `dock` (`ui/dock.html`) | desenha a dock; transparente, sempre no topo, fora da barra, sem tirar o foco; largura do monitor e altura com folga para a ampliação e as dicas; fora da dock os cliques atravessam | só anima com o mouse em cima |
+| thread `dock-shell` | janela auxiliar invisível: esconde a barra nativa, AppBar, ganchos de eventos de janela, avisos do registro (tema e fixados), janela do vidro | por evento (`MsgWaitForMultipleObjects`); rajadas viram uma leitura a cada 80 ms |
+| thread `dock-hover` | liga/desliga o click-through conforme o cursor | 150 ms longe da dock, 20 ms perto |
+| thread `dock-icons` | extrai os ícones do shell (PNG, com cache) | sob demanda |
+| processo vigia | devolve a barra nativa se o Island morrer | bloqueado esperando |
+
+Eventos para a página: `dock:items`, `dock:cfg`, `dock:theme` e `dock:hover`; comandos: `dock_init`, `dock_layout`, `dock_click`, `dock_action` e `dock_icon`. Código em `src-tauri/src/dock/`.
+
+### Limitações da barra
+
+- Só no **monitor principal**; nos outros monitores as barras do Windows continuam como estão.
+- Sem miniaturas ao passar o mouse, jump lists, contadores (badges), barra de progresso e fixar/desafixar ou arrastar ícones (por enquanto).
+- **Win+T** põe o foco na barra nativa escondida (invisível); Esc devolve.
+- **Apps elevados** (ex.: o Gerenciador de Tarefas): dá para focar, mas não minimizar pela dock, e enquanto um deles está em primeiro plano o Windows não deixa um app comum trocar o foco.
+- O botão ⌃ usa Win+B e Enter: se o menu de ícones ocultos estiver desligado nas configurações da barra, o Enter ativa o primeiro ícone da bandeja.
+- Apps que saem da barra pela API (`ITaskbarList::DeleteTab`) não têm estilo que os denuncie: ficam de fora as janelas "sempre no topo" sem barra de título e as que deixam o clique passar (como a própria ilha), mas algum caso raro pode aparecer na dock.
+- O desfoque arredonda com o canto nativo de 8 px do Windows (ele ignora a região da janela), por isso fica recuado 5 px da borda da dock.
+- O ícone da Lixeira é lido ao abrir a dock (não troca na hora entre cheia e vazia).
 
 ## Galeria
 
@@ -155,6 +201,7 @@ Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configur
 - GPU só NVIDIA (via NVML); sem placa NVIDIA o card mostra “—”.
 - **Brilho** só funciona na tela interna de notebook (a tela interna é detectada pelo WMI; as mudanças chegam pelo aviso de energia do Windows e pelo evento do WMI, o que vier primeiro): monitores externos e desktops não mostram o HUD de brilho.
 - **Aviso de brilho do Windows**: continua aparecendo junto do HUD de brilho da ilha (só o aviso de volume é escondido).
+- **Barra de tarefas (dock)**: veja [Limitações da barra](#limitações-da-barra).
 - **Aviso de volume do Windows**: o Island o esconde enquanto mostra o próprio HUD de volume, mas isso depende de detalhes internos e não documentados do shell do Windows (testado no Windows 11 build 26300). Uma atualização do Windows pode quebrar o truque; nesse caso o aviso nativo simplesmente volta a aparecer junto do HUD. Também pode piscar por um quadro antes de sumir. Dá para desligar em Configurações → Esconder o aviso de volume do Windows.
 - **Posição na base**: a ilha fica logo acima da área de trabalho do monitor, que o Windows calcula sem a barra de tarefas. Com a barra em ocultar automaticamente, essa área vai até a borda da tela e a ilha fica por cima da barra quando ela aparece. Com a barra numa lateral (ou no topo, com ferramentas de terceiros), a ilha respeita a área de trabalho, mas não foi testada assim. Uma barra flutuante que não reserva espaço no Windows também não é levada em conta.
 - **Onda do USB**: a distorção usa uma foto da tela tirada no instante do plugue. Vídeo protegido por DRM (Netflix, Prime Video e afins no navegador) sai preto nessa foto, então no anel ele aparece como um borrão escuro por um instante; por isso, e para não atrapalhar jogo, vídeo ou apresentação, a onda não toca com app em tela cheia. Dentro do anel a imagem é a da foto (parada); fora dele a tela continua normal. Se incomodar, deixe a distorção em Desligada: a onda fica só com o brilho e não captura nada.

@@ -118,6 +118,7 @@
     muted_apps: [],
     fullscreen: "hide",
     hide_volume_osd: true,
+    taskbar: { enabled: false, glass: "system", align: "center", size: "medium", magnify: "subtle", tray_button: true },
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */
@@ -1390,6 +1391,27 @@
       ${dis ? `<div class="s-label">Avisos de notificação estão desligados acima.</div>` : ""}`;
   }
 
+  // ---- barra de tarefas do Island (dock): valores iguais aos do settings.rs (Taskbar)
+  const TB_GLASS = [["system", "Sistema"], ["dark", "Escuro"], ["light", "Claro"], ["clear", "Transparente"]];
+  const TB_ALIGN = [["center", "Centro"], ["left", "Esquerda"]];
+  const TB_SIZE = [["small", "Pequeno"], ["medium", "Médio"], ["large", "Grande"]];
+  const TB_MAG = [["off", "Não"], ["subtle", "Leve"], ["strong", "Forte"]];
+  function taskbarSection(c) {
+    const t = { ...DEFAULT_CFG.taskbar, ...(c.taskbar || {}) };
+    return `<div class="sec">Barra de tarefas</div>
+      ${toggle("taskbar.enabled", "Barra flutuante do Island", t.enabled)}
+      <div class="s-label">Esconde a barra do Windows enquanto estiver ligada; ela volta ao desligar ou sair.</div>
+      <div class="s-label">Vidro</div>
+      ${seg("taskbar.glass", TB_GLASS, t.glass)}
+      <div class="s-label">Posição dos ícones</div>
+      ${seg("taskbar.align", TB_ALIGN, t.align)}
+      <div class="s-label">Tamanho</div>
+      ${seg("taskbar.size", TB_SIZE, t.size)}
+      <div class="s-label">Ampliar ao passar o mouse</div>
+      ${seg("taskbar.magnify", TB_MAG, t.magnify)}
+      ${toggle("taskbar.tray_button", "Botão de ícones ocultos (⌃)", t.tray_button)}`;
+  }
+
   function renderSettings() {
     const c = cfg(), a = c.aura, uw = c.usb_wave || DEFAULT_CFG.usb_wave;
     const custom = !SWATCHES.includes(a.color);
@@ -1423,6 +1445,7 @@
       ${positionPicker(c.position)}
       <div class="sec">Monitor</div>
       ${monitorChips(c.monitor)}
+      ${taskbarSection(c)}
       <div class="sec">Atalhos</div>
       ${SHORTCUTS.map(([k, l]) => shortcutRow(k, l, c.shortcuts?.[k] ?? "")).join("")}
       <div class="sec">Avisos na ilha</div>

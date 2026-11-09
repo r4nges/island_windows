@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dock;
 mod platform;
 mod settings;
 mod shortcuts;
@@ -57,7 +58,8 @@ struct Shared {
     osd_thread: OnceLock<thread::Thread>,
     /// cor de destaque do Windows ("#rrggbb"), para a aura "Sistema" (o `spawn_accent` atualiza)
     accent: Mutex<Option<String>>,
-    /// app em tela cheia (jogo, vídeo, apresentação; o `spawn_fast` atualiza): a onda do USB não toca
+    /// app em tela cheia (jogo, vídeo, apresentação; o `spawn_fast` atualiza): a onda do USB
+    /// não toca e a dock da barra de tarefas some
     fullscreen: AtomicBool,
     /// onda do USB na tela (da `play_wave` até a `wave_done`): disparos no meio são ignorados
     wave_on: AtomicBool,
@@ -447,6 +449,7 @@ fn set_settings(
     }
     // sempre: também retoma os atalhos depois de uma gravação no painel
     shortcuts::apply(&app, &s.shortcuts);
+    dock::apply(&app, &s.taskbar);
     Ok(s)
 }
 
@@ -648,7 +651,9 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>, vol: plat
             // verdade. ~330 ms para reagir rápido a maximizar/Alt+Tab.
             if tick % 10 == 0 {
                 let (fs, exclusive) = fast.fullscreen();
-                shared.fullscreen.store(fs, Ordering::Relaxed);
+                if shared.fullscreen.swap(fs, Ordering::Relaxed) != fs {
+                    dock::fullscreen(&app, fs);
+                }
                 let cov = match (win.outer_position(), win.outer_size(), win.scale_factor()) {
                     (Ok(p), Ok(sz), Ok(sf)) => {
                         let zone = pill_zone(p, sz, sf * shared.zoom(), *shared.anchor.lock().unwrap());
@@ -971,6 +976,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    // `island.exe --taskbar-watchdog`: só o vigia que devolve a barra nativa
+    if dock::watchdog_main() {
+        return;
+    }
     let shared = Arc::new(Shared::default());
     let on_exit = shared.clone();
 
@@ -986,7 +995,8 @@ fn main() {
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
             list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color,
-            play_wave, wave_frame, wave_done
+            play_wave, wave_frame, wave_done,
+            dock::dock_init, dock::dock_layout, dock::dock_click, dock::dock_action, dock::dock_icon
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -997,6 +1007,7 @@ fn main() {
             shared.hide_osd.store(prefs.hide_volume_osd && prefs.modules.volume, Ordering::Relaxed);
             apply_scale(&win, &shared, prefs.scale);
             shortcuts::apply(app.handle(), &prefs.shortcuts);
+            dock::setup(app.handle(), &prefs.taskbar);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });
 
             let _ = win.show();
@@ -1042,6 +1053,8 @@ fn main() {
             // ao sair: para de esconder o aviso de volume do Windows
             if let tauri::RunEvent::Exit = ev {
                 on_exit.hide_osd.store(false, Ordering::Relaxed);
+                // a barra nativa volta antes de o processo terminar
+                dock::shutdown();
             }
         });
 }

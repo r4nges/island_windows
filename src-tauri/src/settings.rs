@@ -96,6 +96,63 @@ impl Default for Shortcuts {
     }
 }
 
+/// Barra de tarefas do Island (dock flutuante de vidro, `src/dock`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Taskbar {
+    /// desenha a dock e esconde a barra nativa do Windows; desligada por
+    /// padrão, porque mexe na barra do usuário
+    pub enabled: bool,
+    /// "system" (segue o tema claro/escuro dos apps) | "dark" | "light" | "clear"
+    pub glass: String,
+    /// posição dos ícones: "center" | "left"
+    pub align: String,
+    /// "small" | "medium" | "large" (ícones de 38, 46 e 54 px)
+    pub size: String,
+    /// ampliação ao passar o mouse: "off" | "subtle" | "strong"
+    pub magnify: String,
+    /// botão ⌃ que abre os ícones ocultos da bandeja
+    pub tray_button: bool,
+}
+
+impl Default for Taskbar {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            glass: "system".into(),
+            align: "center".into(),
+            size: "medium".into(),
+            magnify: "subtle".into(),
+            tray_button: true,
+        }
+    }
+}
+
+impl Taskbar {
+    /// Valor fora da lista (arquivo editado à mão, versão futura) volta ao padrão.
+    fn sanitize(&mut self) {
+        let d = Taskbar::default();
+        let fix = |v: &mut String, ok: &[&str], def: &str| {
+            if !ok.contains(&v.as_str()) {
+                *v = def.into();
+            }
+        };
+        fix(&mut self.glass, &["system", "dark", "light", "clear"], &d.glass);
+        fix(&mut self.align, &["center", "left"], &d.align);
+        fix(&mut self.size, &["small", "medium", "large"], &d.size);
+        fix(&mut self.magnify, &["off", "subtle", "strong"], &d.magnify);
+    }
+
+    /// Lado do ícone em px CSS (o mesmo `--icon` de `ui/dock.css`).
+    pub fn icon_px(&self) -> f64 {
+        match self.size.as_str() {
+            "small" => 38.0,
+            "large" => 54.0,
+            _ => 46.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -117,6 +174,8 @@ pub struct Settings {
     pub fullscreen: String,
     /// esconde o aviso de volume do próprio Windows (só com o aviso `volume` ligado)
     pub hide_volume_osd: bool,
+    /// barra de tarefas própria (dock flutuante)
+    pub taskbar: Taskbar,
 }
 
 impl Default for Settings {
@@ -132,6 +191,7 @@ impl Default for Settings {
             muted_apps: Vec::new(),
             fullscreen: "hide".into(),
             hide_volume_osd: true,
+            taskbar: Taskbar::default(),
         }
     }
 }
@@ -195,6 +255,7 @@ impl Settings {
         if self.fullscreen != "peek" {
             self.fullscreen = "hide".into();
         }
+        self.taskbar.sanitize();
     }
 }
 
@@ -326,5 +387,40 @@ mod tests {
         assert_eq!(s.usb_wave.intensity, "off");
         assert_eq!(s.usb_wave.duration, "slow");
         assert_eq!(s.usb_wave.distortion, "strong");
+    }
+
+    #[test]
+    fn config_antiga_sem_barra_de_tarefas_usa_o_padrao() {
+        let s: Settings = serde_json::from_str(r#"{"scale":1.1,"aura":{"intensity":"medium"}}"#).unwrap();
+        let t = &s.taskbar;
+        // desligada: ligar esconde a barra do Windows, então só por escolha do usuário
+        assert!(!t.enabled);
+        assert_eq!((t.glass.as_str(), t.align.as_str(), t.size.as_str(), t.magnify.as_str()), ("system", "center", "medium", "subtle"));
+        assert!(t.tray_button);
+        // bloco parcial: o que falta ganha o padrão
+        let s: Settings = serde_json::from_str(r#"{"taskbar":{"enabled":true,"size":"large"}}"#).unwrap();
+        assert!(s.taskbar.enabled);
+        assert_eq!(s.taskbar.size, "large");
+        assert_eq!(s.taskbar.glass, "system");
+        assert!(s.taskbar.tray_button);
+    }
+
+    #[test]
+    fn barra_de_tarefas_valores_invalidos_voltam_ao_padrao() {
+        let mut s = Settings::default();
+        s.taskbar.glass = "Dark".into();
+        s.taskbar.align = "right".into();
+        s.taskbar.size = "46".into();
+        s.taskbar.magnify = "max".into();
+        s.sanitize();
+        assert_eq!(s.taskbar, super::Taskbar::default());
+        for (v, px) in [("small", 38.0), ("medium", 46.0), ("large", 54.0)] {
+            s.taskbar.size = v.into();
+            s.sanitize();
+            assert_eq!(s.taskbar.icon_px(), px);
+        }
+        s.taskbar.glass = "clear".into();
+        s.sanitize();
+        assert_eq!(s.taskbar.glass, "clear");
     }
 }

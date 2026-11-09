@@ -1691,6 +1691,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "nvml-wrapper",
+ "png",
  "serde",
  "serde_json",
  "sysinfo",
