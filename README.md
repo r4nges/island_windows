@@ -14,6 +14,7 @@ Dynamic Island para Windows 11: uma pílula preta no topo da tela que se transfo
 | Volume | ao mudar o volume ou o mudo; o aviso de volume nativo do Windows some para não duplicar (veja [Limitações conhecidas](#limitações-conhecidas)) |
 | Brilho | ao mudar o brilho da tela interna do notebook |
 | Toasts | Caps Lock, carregador conectado/desconectado, bateria fraca (20/10/5%), internet caiu/voltou, texto copiado |
+| USB conectado | ao plugar um pendrive, mouse, dock…: aviso com o nome do aparelho e uma onda de luz na cor da aura que sai da ilha e atravessa a tela; no anel, a tela "salta" como vidro (refração, leve aberração cromática e um brilho fino). Não toca com app em tela cheia |
 | Pomodoro | anel + contagem compacta enquanto roda |
 | Expandido (mouse em cima) | abas **Mídia**, **Sistema** (CPU, RAM, GPU NVIDIA, rede), **Foco**, **Clipboard** (histórico, clique para recopiar), **Notificações** e **Estante** (arraste arquivos até a ilha) |
 
@@ -29,11 +30,12 @@ Dynamic Island para Windows 11: uma pílula preta no topo da tela que se transfo
 ### Configurações
 
 - **Aura**: intensidade (Desligada, Sutil ou Média), se aparece com a ilha aberta e a cor: automática (a cor da capa do álbum), **Sistema** (a cor de destaque do Windows, que acompanha na hora quando você a troca nas Configurações do Windows), predefinidas ou um seletor de matiz.
+- **Aura ao conectar USB**: intensidade da onda (Desligada, Sutil ou Média), duração (Rápida, Normal ou Lenta) e distorção do vidro (Desligada, Leve ou Forte). A cor é a mesma da aura. Desligar a onda não desliga o aviso, que tem a sua própria chave em **Avisos**.
 - **Tamanho da ilha**: 90%, 100% ou 110%.
 - **App por baixo da ilha**: quando há um app em tela cheia ou uma janela maximizada por baixo da ilha (por exemplo, as abas do navegador), a ilha some e fica invisível, mas dá para puxá-la deixando o mouse parado na borda de cima da tela. Se preferir, escolha **Deixar um traço** no lugar.
 - **Monitor**: em qual tela a ilha aparece.
 - **Atalhos globais**, regraváveis: `Ctrl+Alt+I` abre/fecha a ilha, `Ctrl+Alt+Espaço` dá play/pause e `Ctrl+Alt+P` inicia o pomodoro.
-- **Avisos**: liga/desliga cada tipo (volume, brilho, Caps Lock, bateria, internet, nova música, texto copiado, notificações, som do pomodoro) e silencia notificações app por app.
+- **Avisos**: liga/desliga cada tipo (volume, brilho, Caps Lock, bateria, internet, nova música, texto copiado, notificações, som do pomodoro, USB conectado) e silencia notificações app por app.
 - **Esconder o aviso de volume do Windows**: ligado por padrão (só vale com o aviso de Volume ligado).
 
 Fora da pílula os cliques atravessam a janela. A ilha some sozinha em jogo, vídeo em tela cheia ou apresentação. O ícone na bandeja tem **Configurações**, **Iniciar com o Windows**, **Recentralizar**, **Recarregar visual**, **Procurar atualizações** e **Sair**. **Iniciar com o Windows** vem ligado: o Island ativa sozinho na primeira execução e, se você desligar pela bandeja, a escolha vale também nas atualizações.
@@ -60,9 +62,10 @@ flowchart LR
     win[("APIs do Windows")]
     gh[("GitHub Releases<br/>latest.json")]
     cfg[("settings.json")]
-    threads["<b>Threads do Rust</b><br/>fast ~30 Hz: hover, Caps Lock,<br/>clipboard, tela cheia<br/>volume e brightness por evento<br/>media 700 ms · slow 1 s<br/>notifs · volume_osd · shortcuts · update"]
-    ui["<b>Frontend</b><br/>ui/app.js no WebView2"]
-    cmds["<b>Comandos Tauri</b><br/>set_settings, media_cmd, power_action…"]
+    threads["<b>Threads do Rust</b><br/>fast ~30 Hz: hover, Caps Lock,<br/>clipboard, tela cheia<br/>volume, brightness e usb por evento<br/>media 700 ms · slow 1 s<br/>notifs · volume_osd · shortcuts · update"]
+    ui["<b>Frontend</b><br/>ui/app.js no WebView2<br/>(janela main)"]
+    cmds["<b>Comandos Tauri</b><br/>set_settings, media_cmd, play_wave…"]
+    wave["<b>Onda do USB</b><br/>ui/wave.js (janela wave,<br/>escondida fora da onda)"]
 
     win --> threads
     gh --> threads
@@ -71,9 +74,12 @@ flowchart LR
     cmds --> win
     cmds <--> cfg
     cmds -->|"install_update"| gh
+    cmds -->|"wave:play"| wave
+    wave -->|"wave_frame, wave_done"| cmds
 ```
 
-- **Threads e eventos**: cada thread tem o seu ritmo e emite só o que mudou. Eventos: `island:hover`, `island:fast`, `island:media`, `island:art`, `island:slow`, `island:brightness`, `island:clip`, `island:covered`, `island:notif`, `island:update`, `island:shortcut`, `island:drag`/`island:drop`, entre outros.
+- **Threads e eventos**: cada thread tem o seu ritmo e emite só o que mudou. Eventos: `island:hover`, `island:fast`, `island:media`, `island:art`, `island:slow`, `island:brightness`, `island:clip`, `island:covered`, `island:notif`, `island:update`, `island:shortcut`, `island:usb`, `island:drag`/`island:drop`, entre outros.
+- **Janela da onda do USB**: uma segunda janela (`wave`, página `ui/wave.html`) criada escondida no início: transparente, sem foco, fora da barra de tarefas e com o clique atravessando. Ao chegar `island:usb`, a ilha mostra o aviso e chama `play_wave`; o Rust captura o monitor da ilha (GDI, só com distorção ligada), mostra a janela logo abaixo da ilha (que continua por cima) e manda `wave:play`. A página sobe a captura como textura WebGL (`wave_frame`, bytes crus), desenha o anel e chama `wave_done`, e a janela volta a se esconder. Parada, não gasta nada.
 - **Comandos Tauri**: o frontend chama o Rust para agir (controle de mídia, energia, Wi-Fi, abrir arquivos, ler e gravar configurações, instalar atualização). Todo comando tem resposta no modo demo (`demoInvoke` em `ui/app.js`).
 - **Configurações**: `%APPDATA%\dev.r4nges.island\settings.json`, modelo em `src-tauri/src/settings.rs` (valores ausentes ganham o padrão e valores inválidos são corrigidos ao carregar). O mesmo padrão é espelhado em `DEFAULT_CFG` no `ui/app.js`.
 - **Código do Windows**: tudo em `src-tauri/src/platform/win.rs`, com um `mock.rs` equivalente para compilar fora do Windows.
@@ -119,7 +125,7 @@ A chave privada fica em `~\.tauri\island.key` (com a senha em `island.key.passwo
 ## Ver o visual sem compilar
 
 Abra `ui\index.html` no navegador: roda em modo demo com dados falsos.
-Teclas: `V` volume, `M` mudo, `K` Caps Lock, `L` brilho, `C` copiar, `B` carregador, `W` Wi-Fi, `N` próxima faixa, `P` pomodoro, `D` soltar arquivos, `E` expandir, `T` notificação, `U` atualização disponível, `S` configurações, `O` abrir (como o atalho global), `F` simula um app por baixo da ilha, `Espaço` play/pause.
+Teclas: `V` volume, `M` mudo, `K` Caps Lock, `L` brilho, `C` copiar, `B` carregador, `W` Wi-Fi, `N` próxima faixa, `P` pomodoro, `D` soltar arquivos, `E` expandir, `T` notificação, `U` atualização disponível, `S` configurações, `O` abrir (como o atalho global), `F` simula um app por baixo da ilha, `X` USB conectado (só o aviso: a onda precisa do app), `Espaço` play/pause.
 
 Parâmetros na URL: `?clean` esconde a dica; `?state=expanded&tab=<media|system|focus|clip|notif|shelf>&view=<cpu|ram|gpu|net|wifi|battery|clock|settings|user>` abre num estado fixo; `?seed=1` enche clipboard e estante; `?update` simula uma atualização pendente.
 
@@ -149,6 +155,7 @@ Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configur
 - **Brilho** só funciona na tela interna de notebook (a tela interna é detectada pelo WMI; as mudanças chegam pelo aviso de energia do Windows e pelo evento do WMI, o que vier primeiro): monitores externos e desktops não mostram o HUD de brilho.
 - **Aviso de brilho do Windows**: continua aparecendo junto do HUD de brilho da ilha (só o aviso de volume é escondido).
 - **Aviso de volume do Windows**: o Island o esconde enquanto mostra o próprio HUD de volume, mas isso depende de detalhes internos e não documentados do shell do Windows (testado no Windows 11 build 26300). Uma atualização do Windows pode quebrar o truque; nesse caso o aviso nativo simplesmente volta a aparecer junto do HUD. Também pode piscar por um quadro antes de sumir. Dá para desligar em Configurações → Esconder o aviso de volume do Windows.
+- **Onda do USB**: a distorção usa uma foto da tela tirada no instante do plugue. Vídeo protegido por DRM (Netflix, Prime Video e afins no navegador) sai preto nessa foto, então no anel ele aparece como um borrão escuro por um instante; por isso, e para não atrapalhar jogo, vídeo ou apresentação, a onda não toca com app em tela cheia. Dentro do anel a imagem é a da foto (parada); fora dele a tela continua normal. Se incomodar, deixe a distorção em Desligada: a onda fica só com o brilho e não captura nada.
 
 ## Consumo
 

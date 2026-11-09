@@ -128,6 +128,27 @@ impl AccentWatch {
     }
 }
 
+/// Nenhum USB chega no mock: `start` falha e a thread só tenta de novo.
+pub struct UsbWatch;
+
+impl UsbWatch {
+    pub fn start() -> Option<Self> {
+        None
+    }
+    pub fn next(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Sem captura fora do Windows: a onda sai só com o brilho, sem distorção.
+pub fn capture_screen(_x: i32, _y: i32, _w: i32, _h: i32) -> Option<Vec<u8>> {
+    None
+}
+
+pub fn show_below(_win: isize, _above: isize) {}
+
+pub fn hide_window(_win: isize) {}
+
 pub fn battery() -> Option<Battery> {
     Some(Battery { percent: 78, charging: false })
 }

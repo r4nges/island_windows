@@ -21,6 +21,8 @@ pub struct Modules {
     pub clipboard: bool,
     pub notifications: bool,
     pub pomo_sound: bool,
+    /// dispositivo USB conectado
+    pub usb: bool,
 }
 
 impl Default for Modules {
@@ -35,6 +37,7 @@ impl Default for Modules {
             clipboard: true,
             notifications: true,
             pomo_sound: true,
+            usb: true,
         }
     }
 }
@@ -53,6 +56,25 @@ pub struct Aura {
 impl Default for Aura {
     fn default() -> Self {
         Self { intensity: "subtle".into(), expanded: false, color: "auto".into() }
+    }
+}
+
+/// Onda de luz que sai da ilha ao conectar um dispositivo USB. A cor é a
+/// mesma da aura (`Aura::color`); o aviso em si é o `Modules::usb`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct UsbWave {
+    /// "off" | "subtle" | "medium"
+    pub intensity: String,
+    /// "fast" | "normal" | "slow" (1100 / 1700 / 2600 ms, no frontend)
+    pub duration: String,
+    /// distorção do vidro no anel: "off" | "light" | "strong" (0 / 9 / 18 px)
+    pub distortion: String,
+}
+
+impl Default for UsbWave {
+    fn default() -> Self {
+        Self { intensity: "subtle".into(), duration: "fast".into(), distortion: "light".into() }
     }
 }
 
@@ -79,6 +101,7 @@ impl Default for Shortcuts {
 pub struct Settings {
     pub modules: Modules,
     pub aura: Aura,
+    pub usb_wave: UsbWave,
     /// escala da ilha: 0.9 | 1.0 | 1.1
     pub scale: f64,
     /// nome do monitor (ex.: `\\.\DISPLAY2`); `None` = principal
@@ -98,6 +121,7 @@ impl Default for Settings {
         Self {
             modules: Modules::default(),
             aura: Aura::default(),
+            usb_wave: UsbWave::default(),
             scale: 1.0,
             monitor: None,
             shortcuts: Shortcuts::default(),
@@ -126,6 +150,18 @@ impl Settings {
         let hex_ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
         if c != "auto" && c != "system" && !hex_ok {
             self.aura.color = "auto".into();
+        }
+        // onda do USB: valor desconhecido volta para o padrão daquela opção
+        let w = &mut self.usb_wave;
+        let d = UsbWave::default();
+        if !["off", "subtle", "medium"].contains(&w.intensity.as_str()) {
+            w.intensity = d.intensity;
+        }
+        if !["fast", "normal", "slow"].contains(&w.duration.as_str()) {
+            w.duration = d.duration;
+        }
+        if !["off", "light", "strong"].contains(&w.distortion.as_str()) {
+            w.distortion = d.distortion;
         }
         for s in [&mut self.shortcuts.open, &mut self.shortcuts.play, &mut self.shortcuts.pomo] {
             *s = s.trim().to_string();
@@ -188,5 +224,45 @@ mod tests {
     fn config_antiga_sem_cor_continua_auto() {
         let s: Settings = serde_json::from_str(r#"{"aura":{"intensity":"medium"}}"#).unwrap();
         assert_eq!(s.aura.color, "auto");
+    }
+
+    #[test]
+    fn config_antiga_sem_usb_ganha_os_padroes() {
+        // arquivo de antes da onda do USB: sem `usb_wave` e sem `modules.usb`
+        let mut s: Settings = serde_json::from_str(r#"{"modules":{"caps":false},"aura":{"intensity":"medium"}}"#).unwrap();
+        s.sanitize();
+        assert!(s.modules.usb);
+        assert!(!s.modules.caps);
+        assert_eq!(s.usb_wave.intensity, "subtle");
+        assert_eq!(s.usb_wave.duration, "fast");
+        assert_eq!(s.usb_wave.distortion, "light");
+    }
+
+    #[test]
+    fn onda_usb_parcial_completa_com_o_padrao() {
+        let s: Settings = serde_json::from_str(r#"{"usb_wave":{"duration":"slow"}}"#).unwrap();
+        assert_eq!(s.usb_wave.intensity, "subtle");
+        assert_eq!(s.usb_wave.duration, "slow");
+        assert_eq!(s.usb_wave.distortion, "light");
+    }
+
+    #[test]
+    fn onda_usb_invalida_volta_ao_padrao() {
+        let mut s = Settings::default();
+        s.usb_wave.intensity = "forte".into();
+        s.usb_wave.duration = "1700".into();
+        s.usb_wave.distortion = "Strong".into();
+        s.sanitize();
+        assert_eq!(s.usb_wave.intensity, "subtle");
+        assert_eq!(s.usb_wave.duration, "fast");
+        assert_eq!(s.usb_wave.distortion, "light");
+        // valores válidos ficam como estão
+        s.usb_wave.intensity = "off".into();
+        s.usb_wave.duration = "slow".into();
+        s.usb_wave.distortion = "strong".into();
+        s.sanitize();
+        assert_eq!(s.usb_wave.intensity, "off");
+        assert_eq!(s.usb_wave.duration, "slow");
+        assert_eq!(s.usb_wave.distortion, "strong");
     }
 }

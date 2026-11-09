@@ -44,6 +44,7 @@
     lan: svg('<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>'),
     lock: svg('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
     caps: svg('<path d="M12 4l7 8h-4v4H9v-4H5z"/><path d="M9 20h6"/>'),
+    usb: svg('<circle cx="12" cy="20" r="2"/><path d="M12 18V4"/><path d="m9 7 3-3 3 3"/><path d="M12 14 7 11V8"/><path d="m12 12 5-3V7"/><rect x="5.5" y="6.5" width="3" height="2" rx=".4"/><circle cx="17" cy="6" r="1.2"/>'),
     check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
     ext: svg('<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
     refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
@@ -107,8 +108,9 @@
 
   // padrão igual ao settings.rs; só vale até o Rust responder (e no modo demo)
   const DEFAULT_CFG = {
-    modules: { volume: true, brightness: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true },
+    modules: { volume: true, brightness: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true, usb: true },
     aura: { intensity: "subtle", expanded: false, color: "auto" },
+    usb_wave: { intensity: "subtle", duration: "fast", distortion: "light" },
     scale: 1.0,
     monitor: null,
     shortcuts: { open: "Ctrl+Alt+KeyI", play: "Ctrl+Alt+Space", pomo: "Ctrl+Alt+KeyP" },
@@ -239,7 +241,8 @@
     const glowOn =
       a.intensity !== "off" &&
       ((!!S.media && (m === "media" || (m === "expanded" && pill.dataset.panel === "media") || (m === "toast" && S.hud?.glow))) ||
-        (a.expanded && m === "expanded"));
+        (a.expanded && m === "expanded") ||
+        (m === "toast" && S.hud?.aura)); // aviso que acende a aura mesmo sem mídia (USB conectado)
     aura.classList.toggle("on", glowOn);
     ensureSpin();
     $$(".st").forEach((b) => b.classList.remove("on"));
@@ -488,14 +491,19 @@
     x.putImageData(img, 0, 0);
     stage.style.setProperty("--grain-img", `url(${c.toDataURL("image/png")})`);
   })();
+  /** Cor da aura (`--glow`) como [r, g, b]; a onda do USB usa a mesma. */
+  function glowRgb() {
+    const a = cfg().aura;
+    const hex = a.color === "auto" ? (S.media && S.art ? null : AURA_FALLBACK)
+      : a.color === "system" ? S.sysAccent || AURA_FALLBACK // sem leitura ainda (ou falhou): a mesma cor de quando não há capa
+      : a.color;
+    return hex ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : S.color;
+  }
   function applyAccent() {
     const c = `rgb(${S.color.join(",")})`;
     const a = cfg().aura;
     stage.style.setProperty("--accent", c);
-    const glow = a.color === "auto" ? (S.media && S.art ? c : AURA_FALLBACK)
-      : a.color === "system" ? S.sysAccent || AURA_FALLBACK // sem leitura ainda (ou falhou): a mesma cor de quando não há capa
-      : a.color;
-    stage.style.setProperty("--glow", glow);
+    stage.style.setProperty("--glow", `rgb(${glowRgb().join(",")})`);
     stage.style.setProperty("--aura-op", AURA_OPACITY[a.intensity] ?? 0.32);
   }
   function dominant(img) {
@@ -609,6 +617,27 @@
     if (on("brightness")) hud("brightness", 1400);
   }
   listen("island:brightness", onBrightness);
+
+  // ------------------------------------------------------------ USB conectado
+  // O Rust já agrupou a rajada de um plugue (hub, dock) e manda um nome só.
+  // O aviso segue `modules.usb`; a onda segue `usb_wave` e o Rust a ignora
+  // com app em tela cheia ou com outra onda ainda rodando.
+  const WAVE_MS = { fast: 1100, normal: 1700, slow: 2600 };
+  const WAVE_BULGE = { off: 0, light: 9, strong: 18 };
+  function onUsb(name) {
+    if (on("usb")) hud("toast", 3000, {
+      icon: I.usb, iconColor: "var(--glow)", iconBg: "color-mix(in srgb, var(--glow) 28%, transparent)", aura: true,
+      title: "USB conectado", sub: name || "Dispositivo USB", acc: "",
+    });
+    const w = cfg().usb_wave || DEFAULT_CFG.usb_wave;
+    if (w.intensity === "off") return;
+    // centro da pílula como estiver agora (o aviso já pediu o tamanho dela), em px lógicos
+    const cy = ((AT_EDGE.includes(mode) ? 0 : TOP) + sh.t / 2) * (cfg().scale || 1);
+    fire("play_wave", {
+      wave: { color: glowRgb(), intensity: w.intensity, duration: WAVE_MS[w.duration] ?? 1100, bulge: WAVE_BULGE[w.distortion] ?? 9, cy },
+    });
+  }
+  listen("island:usb", onUsb);
 
   // ------------------------------------------------------------ sistema
   function sparkPath(arr, max) {
@@ -1191,7 +1220,10 @@
   const MODULE_LABELS = [
     ["volume", "Volume"], ["brightness", "Brilho"], ["caps", "Caps Lock"], ["battery", "Bateria e carregador"], ["network", "Internet caiu/voltou"],
     ["track", "Nova música"], ["clipboard", "Texto copiado"], ["notifications", "Notificações"], ["pomo_sound", "Som do pomodoro"],
+    ["usb", "USB conectado"],
   ];
+  const WAVE_SPEEDS = [["fast", "Rápida"], ["normal", "Normal"], ["slow", "Lenta"]];
+  const WAVE_GLASS = [["off", "Desligada"], ["light", "Leve"], ["strong", "Forte"]];
   const hueHex = (h) => {
     // HSL(h, 90%, 62%) -> #rrggbb
     const s = 0.9, l = 0.62, k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
@@ -1300,8 +1332,10 @@
   }
 
   function renderSettings() {
-    const c = cfg(), a = c.aura;
+    const c = cfg(), a = c.aura, uw = c.usb_wave || DEFAULT_CFG.usb_wave;
     const custom = !SWATCHES.includes(a.color);
+    // com a onda desligada, duração e distorção ficam apagadas (sem efeito)
+    const waveOff = uw.intensity === "off" ? "s-dis" : "";
     $(".js-settings").innerHTML = `
       <div class="sec">Aura</div>
       ${seg("aura.intensity", AURA_LEVELS, a.intensity)}
@@ -1312,6 +1346,15 @@
         <button class="swatch custom ${custom ? "on" : ""}" data-color="custom" title="Personalizada" style="${custom ? `--c:${a.color}` : ""}"></button>
       </div>
       <input type="range" class="hue js-hue" min="0" max="359" value="${custom ? hexHue(a.color) : 210}" ${custom ? "" : "hidden"}>
+      <div class="sec">Aura ao conectar USB</div>
+      <div class="s-label">Uma onda na cor da aura sai da ilha e atravessa a tela</div>
+      ${seg("usb_wave.intensity", AURA_LEVELS, uw.intensity)}
+      <div class="${waveOff}">
+        <div class="s-label">Duração</div>
+        ${seg("usb_wave.duration", WAVE_SPEEDS, uw.duration)}
+        <div class="s-label">Distorção do vidro</div>
+        ${seg("usb_wave.distortion", WAVE_GLASS, uw.distortion)}
+      </div>
       <div class="sec">Tamanho da ilha</div>
       ${seg("scale", SCALE_OPTS, c.scale)}
       <div class="sec">App por baixo da ilha</div>
@@ -1516,6 +1559,7 @@
       if (k === "d") onDrop(["C:\\Users\\Rangel\\Desktop\\relatorio-notebooks.pdf", "C:\\Users\\Rangel\\Downloads\\inventario.xlsx", "C:\\fotos\\setup.png"]);
       if (k === "t") onNotif({ id: Date.now(), app: "WhatsApp", title: "Mãe", body: "Já chegou em casa?", icon: null, time_ms: Date.now() });
       if (k === "e") { S.hover = !S.hover; refreshExpanded(); render(); }
+      if (k === "x") onUsb("SanDisk Ultra"); // pendrive conectado (a onda só existe no app)
       if (recording) return; // gravando um atalho no painel
       if (k === "s") pinOpen("settings"); // como o item "Configurações" da bandeja
       if (k === "o") onShortcut("open"); // como o atalho global de abrir

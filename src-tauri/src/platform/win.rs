@@ -783,6 +783,291 @@ impl Drop for AccentWatch {
     }
 }
 
+// ------------------------------------------------- USB conectado (cfgmgr32)
+
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Get_DevNode_PropertyW, CM_Get_Device_Interface_PropertyW, CM_Locate_DevNodeW, CM_Register_Notification,
+    CM_Unregister_Notification, CM_LOCATE_DEVNODE_NORMAL, CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL,
+    CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_SUCCESS, HCMNOTIFICATION,
+};
+use windows::Win32::Devices::Properties::{
+    DEVPKEY_Device_BusReportedDeviceDesc, DEVPKEY_Device_DeviceDesc, DEVPKEY_Device_FriendlyName,
+    DEVPKEY_Device_InstanceId, DEVPROPTYPE, DEVPROP_TYPE_STRING,
+};
+use windows::Win32::Foundation::DEVPROPKEY;
+
+/// `GUID_DEVINTERFACE_USB_DEVICE`: interface que o driver do hub publica para
+/// cada dispositivo USB (o aparelho, não cada função dele). Definido aqui para
+/// não puxar a feature `Win32_Devices_Usb` inteira por uma constante.
+const GUID_USB_DEVICE: GUID = GUID::from_u128(0xa5dcbf10_6530_11d2_901f_00c04fb951ed);
+
+/// Um plugue pode gerar uma rajada de chegadas (hub ou dock com aparelhos
+/// atrás, que enumeram em sequência): tudo o que chegar nesta janela, contada
+/// da primeira, vira um aviso só.
+const RAJADA_USB: Duration = Duration::from_millis(1500);
+/// Já com um nome específico na mão, fecha a rajada mais cedo se nada novo
+/// chegar neste intervalo: um pendrive sozinho não espera 1,5 s pelo aviso.
+const QUIETO_USB: Duration = Duration::from_millis(500);
+
+/// Destino dos avisos do cfgmgr32, pelo mesmo motivo do `BRILHO_TX`: o callback
+/// roda numa thread do sistema e um aviso em voo durante o cancelamento nunca
+/// toca memória liberada. Só existe uma thread de USB.
+static USB_TX: Mutex<Option<mpsc::Sender<String>>> = Mutex::new(None);
+
+/// Só repassa o caminho da interface: a documentação pede callback curto, sem
+/// outras chamadas do cfgmgr32 dentro dele (o nome é lido em `UsbWatch::next`).
+unsafe extern "system" fn usb_cb(
+    _h: HCMNOTIFICATION,
+    _ctx: *const core::ffi::c_void,
+    action: CM_NOTIFY_ACTION,
+    data: *const CM_NOTIFY_EVENT_DATA,
+    size: u32,
+) -> u32 {
+    if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL && !data.is_null() {
+        // SymbolicLink é um WCHAR[] de tamanho variável, terminado em zero,
+        // que vai até o fim dos `size` bytes do evento
+        let link = std::ptr::addr_of!((*data).u.DeviceInterface.SymbolicLink) as *const u16;
+        let max = (size as usize).saturating_sub(link as usize - data as usize) / 2;
+        let s = std::slice::from_raw_parts(link, max);
+        let n = s.iter().position(|&c| c == 0).unwrap_or(max);
+        let txt = String::from_utf16_lossy(&s[..n]);
+        if let Some(tx) = USB_TX.lock().ok().as_deref().and_then(Option::as_ref) {
+            let _ = tx.send(txt);
+        }
+    }
+    0 // ERROR_SUCCESS
+}
+
+/// Lê uma propriedade de texto (`DEVPROP_TYPE_STRING`) por `get`, que embrulha
+/// `CM_Get_DevNode_PropertyW` ou `CM_Get_Device_Interface_PropertyW`.
+fn cm_string(get: impl FnOnce(&mut DEVPROPTYPE, *mut u8, &mut u32) -> bool) -> Option<String> {
+    let mut ty = DEVPROPTYPE::default();
+    let mut buf = [0u16; 400];
+    let mut size = std::mem::size_of_val(&buf) as u32;
+    if !get(&mut ty, buf.as_mut_ptr() as *mut u8, &mut size) || ty != DEVPROP_TYPE_STRING {
+        return None;
+    }
+    let n = (size as usize / 2).min(buf.len());
+    let s = String::from_utf16_lossy(&buf[..n]);
+    let s = s.trim_end_matches('\0').trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Nomes do aparelho dono da interface `link`, do mais para o menos específico:
+/// o que o próprio aparelho informa (`BusReportedDeviceDesc`, ex. "SanDisk
+/// Ultra"), o amigável e a descrição do driver (ex. "Dispositivo composto USB").
+/// Vazio se o aparelho já saiu.
+fn usb_names(link: &str) -> Vec<(String, u8)> {
+    let wlink: Vec<u16> = link.encode_utf16().chain(Some(0)).collect();
+    let Some(id) = cm_string(|ty, buf, size| unsafe {
+        CM_Get_Device_Interface_PropertyW(PCWSTR(wlink.as_ptr()), &DEVPKEY_Device_InstanceId, ty, Some(buf), size, 0)
+            == CR_SUCCESS
+    }) else {
+        return Vec::new();
+    };
+    let wid: Vec<u16> = id.encode_utf16().chain(Some(0)).collect();
+    let mut dev = 0u32;
+    if unsafe { CM_Locate_DevNodeW(&mut dev, PCWSTR(wid.as_ptr()), CM_LOCATE_DEVNODE_NORMAL) } != CR_SUCCESS {
+        return Vec::new();
+    }
+    let keys: [(&DEVPROPKEY, u8); 3] =
+        [(&DEVPKEY_Device_BusReportedDeviceDesc, 3), (&DEVPKEY_Device_FriendlyName, 2), (&DEVPKEY_Device_DeviceDesc, 1)];
+    keys.iter()
+        .filter_map(|&(key, rank)| {
+            cm_string(|ty, buf, size| unsafe { CM_Get_DevNode_PropertyW(dev, key, ty, Some(buf), size, 0) == CR_SUCCESS })
+                .map(|n| (n, rank))
+        })
+        .collect()
+}
+
+/// Nome que não diz qual é o aparelho: hub, composto, "dispositivo de entrada"…
+/// (em inglês e português, os dois idiomas que o Windows costuma dar aqui).
+fn usb_generic(name: &str) -> bool {
+    const GENERICOS: [&str; 14] = [
+        "hub", "composite", "composto", "generic", "genérico", "usb device", "dispositivo usb", "input device",
+        "dispositivo de entrada", "mass storage", "armazenamento em massa", "billboard", "unknown", "desconhecido",
+    ];
+    let n = name.to_lowercase();
+    GENERICOS.iter().any(|g| n.contains(g))
+}
+
+/// O nome mais específico da rajada: não genérico antes de genérico, depois o
+/// de origem mais específica (`rank` de `usb_names`). Empate fica com o primeiro.
+fn usb_pick(cands: &[(String, u8)]) -> Option<&str> {
+    let score = |(n, rank): &(String, u8)| (!usb_generic(n), *rank);
+    cands.iter().rev().max_by_key(|c| score(c)).map(|(n, _)| n.as_str())
+}
+
+/// Chegadas de dispositivos USB por `CM_Register_Notification` (filtro na
+/// interface `GUID_DEVINTERFACE_USB_DEVICE`): callback do sistema, sem janela,
+/// zero custo parado. Só avisa o que chega depois de assinar, então os
+/// aparelhos já conectados quando o Island abre não viram aviso.
+pub struct UsbWatch {
+    rx: mpsc::Receiver<String>,
+    h: HCMNOTIFICATION,
+}
+
+impl UsbWatch {
+    pub fn start() -> Option<Self> {
+        let (tx, rx) = mpsc::channel();
+        *USB_TX.lock().ok()? = Some(tx);
+        let mut filter = CM_NOTIFY_FILTER {
+            cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
+            FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+            ..Default::default()
+        };
+        filter.u.DeviceInterface.ClassGuid = GUID_USB_DEVICE;
+        let mut h = HCMNOTIFICATION::default();
+        if unsafe { CM_Register_Notification(&filter, None, Some(usb_cb), &mut h) } != CR_SUCCESS {
+            if let Ok(mut g) = USB_TX.lock() {
+                *g = None;
+            }
+            return None;
+        }
+        Some(Self { rx, h })
+    }
+
+    /// Bloqueia até o próximo plugue e devolve o nome do aparelho (ver
+    /// `RAJADA_USB`). Uma rajada em que nenhum nome pôde ser lido (o aparelho
+    /// saiu antes) não vira aviso. `None` se a assinatura morreu.
+    pub fn next(&self) -> Option<String> {
+        use mpsc::RecvTimeoutError;
+        loop {
+            let first = self.rx.recv().ok()?;
+            let t0 = Instant::now();
+            let mut cands = usb_names(&first);
+            let mut last = Instant::now();
+            loop {
+                let specific = cands.iter().any(|(n, _)| !usb_generic(n));
+                let mut wait = RAJADA_USB.saturating_sub(t0.elapsed());
+                if specific {
+                    wait = wait.min(QUIETO_USB.saturating_sub(last.elapsed()));
+                }
+                if wait.is_zero() {
+                    break;
+                }
+                match self.rx.recv_timeout(wait) {
+                    Ok(link) => {
+                        cands.extend(usb_names(&link));
+                        last = Instant::now();
+                    }
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => return None,
+                }
+            }
+            if let Some(n) = usb_pick(&cands) {
+                return Some(n.to_string());
+            }
+        }
+    }
+}
+
+impl Drop for UsbWatch {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CM_Unregister_Notification(self.h);
+        }
+        if let Ok(mut g) = USB_TX.lock() {
+            *g = None;
+        }
+    }
+}
+
+// ------------------------------------------------- Onda do USB: captura e ordem das janelas
+
+/// Copia um retângulo da tela (px físicos, coordenadas da área de trabalho
+/// virtual) como BGRA 32 bpp, linhas de cima para baixo, com largura e altura
+/// (u32 little-endian) nos 8 primeiros bytes: o formato que `ui/wave.js` sobe
+/// direto como textura. GDI basta: uma cópia só, no disparo da onda.
+/// `CAPTUREBLT` inclui janelas em camadas (menus, dicas, sobreposições), que
+/// sem ele sairiam da captura e reapareceriam "por baixo" no anel.
+pub fn capture_screen(x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u8>> {
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
+        SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
+    };
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    unsafe {
+        let screen = GetDC(None);
+        if screen.is_invalid() {
+            return None;
+        }
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let mut out = None;
+        if !mem.is_invalid() && !bmp.is_invalid() {
+            let old = SelectObject(mem, bmp.into());
+            let ok = BitBlt(mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY | CAPTUREBLT).is_ok();
+            // o GetDIBits pede o bitmap fora de qualquer DC
+            SelectObject(mem, old);
+            if ok {
+                let mut buf = vec![0u8; 8 + w as usize * h as usize * 4];
+                buf[..4].copy_from_slice(&(w as u32).to_le_bytes());
+                buf[4..8].copy_from_slice(&(h as u32).to_le_bytes());
+                let mut bi = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: w,
+                        biHeight: -h, // negativo = de cima para baixo
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let lines = GetDIBits(mem, bmp, 0, h as u32, Some(buf[8..].as_mut_ptr().cast()), &mut bi, DIB_RGB_COLORS);
+                if lines == h {
+                    out = Some(buf);
+                }
+            }
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(bmp.into());
+        }
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        ReleaseDC(None, screen);
+        out
+    }
+}
+
+/// Mostra a janela `win` logo abaixo da `above` na ordem Z, sem ativar nenhuma.
+/// As duas são "sempre no topo": a onda fica por cima de tudo, menos da ilha.
+/// Não passa pelo `show()` do Tauri: ele usa `SW_SHOW`, que ativa a janela
+/// (mesmo com `WS_EX_NOACTIVATE`) quando a ilha está em primeiro plano, e uma
+/// janela ativa do tamanho do monitor o Windows trata como tela cheia (a ilha
+/// se esconderia durante a onda).
+pub fn show_below(win: isize, above: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(win as *mut core::ffi::c_void),
+            Some(HWND(above as *mut core::ffi::c_void)),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+/// Esconde a janela mostrada por `show_below` (par dela, também fora do Tauri).
+pub fn hide_window(win: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        let _ = ShowWindow(HWND(win as *mut core::ffi::c_void), SW_HIDE);
+    }
+}
+
 // ------------------------------------------------- Leituras lentas (~1 Hz)
 
 pub fn battery() -> Option<Battery> {
@@ -1378,5 +1663,20 @@ mod tests {
         assert!(!should_quote(r"C:\Users\Rangel\Documents\island-teste\Island-teste.exe", EXE)); // outra cópia
         assert!(!should_quote(&format!("{EXE} --flag"), EXE)); // argumentos extras
         assert!(!should_quote("", EXE)); // vazio
+    }
+
+    #[test]
+    fn usb_pick_prefere_o_nome_especifico() {
+        use super::usb_pick;
+        let c = |n: &str, r: u8| (n.to_string(), r);
+        // dispositivo composto: o nome que o aparelho informa ganha da descrição do driver
+        assert_eq!(usb_pick(&[c("SanDisk Ultra", 3), c("Dispositivo composto USB", 1)]), Some("SanDisk Ultra"));
+        // dock: o hub chega primeiro, o aparelho atrás dele vale mais
+        assert_eq!(usb_pick(&[c("USB2.0 Hub", 3), c("Hub USB genérico", 1), c("Logitech USB Receiver", 3)]), Some("Logitech USB Receiver"));
+        // só nomes genéricos: fica o de origem mais específica
+        assert_eq!(usb_pick(&[c("Generic USB Hub", 1), c("USB2.0 Hub", 3)]), Some("USB2.0 Hub"));
+        // empate: o primeiro da rajada
+        assert_eq!(usb_pick(&[c("Teclado", 3), c("Mouse", 3)]), Some("Teclado"));
+        assert_eq!(usb_pick(&[]), None);
     }
 }

@@ -6,14 +6,14 @@ mod shortcuts;
 mod sys;
 mod update;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, DragDropEvent, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// Área da pílula, em px CSS relativos à janela. Fora dela os cliques
@@ -54,6 +54,14 @@ struct Shared {
     osd_thread: OnceLock<thread::Thread>,
     /// cor de destaque do Windows ("#rrggbb"), para a aura "Sistema" (o `spawn_accent` atualiza)
     accent: Mutex<Option<String>>,
+    /// app em tela cheia (jogo, vídeo, apresentação; o `spawn_fast` atualiza): a onda do USB não toca
+    fullscreen: AtomicBool,
+    /// onda do USB na tela (da `play_wave` até a `wave_done`): disparos no meio são ignorados
+    wave_on: AtomicBool,
+    /// conta as ondas, para o prazo de segurança de uma não esconder a seguinte
+    wave_gen: AtomicU32,
+    /// captura da tela da onda atual, até a página da onda buscá-la (`wave_frame`)
+    wave_frame: Mutex<Option<Vec<u8>>>,
 }
 
 impl Shared {
@@ -221,6 +229,165 @@ async fn power_action(action: String) -> Result<(), String> {
 fn accent_color(shared: tauri::State<'_, Arc<Shared>>) -> Option<String> {
     let cur = shared.accent.lock().unwrap().clone();
     cur.or_else(|| platform::Accent::new()?.read())
+}
+
+// ------------------------------------------------------------- onda do USB
+// A página principal recebe `island:usb`, mostra o aviso e pede a onda
+// (`play_wave`). O Rust captura a tela (só com distorção), cobre o monitor da
+// ilha com a janela "wave" (transparente, sem foco, clique atravessa), logo
+// abaixo da ilha, e manda `wave:play`. A página da onda busca a captura
+// (`wave_frame`), anima e avisa no fim (`wave_done`), e a janela some.
+
+/// Pedido da página principal. Cor = a já resolvida para a aura (`--glow`).
+#[derive(Deserialize)]
+struct WaveReq {
+    color: [u8; 3],
+    /// "subtle" | "medium"
+    intensity: String,
+    /// ms
+    duration: u32,
+    /// deslocamento máximo do vidro, px CSS (0 = sem distorção, sem captura)
+    bulge: f64,
+    /// centro vertical da pílula, px lógicos a partir do topo do monitor
+    cy: f64,
+}
+
+/// O que a página da onda recebe: o pedido + o monitor coberto.
+#[derive(Serialize, Clone)]
+struct WavePlay {
+    color: [u8; 3],
+    intensity: String,
+    duration: u32,
+    bulge: f64,
+    cy: f64,
+    /// tamanho da janela da onda em px físicos (o monitor menos 1 px) e a escala dele
+    width: u32,
+    height: u32,
+    scale: f64,
+    /// há captura esperando em `wave_frame`
+    capture: bool,
+    /// epoch em ms do pedido: a onda sai 140 ms depois dele, com a pílula já abrindo
+    at: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Esconde a janela da onda e solta a captura (se a página nem chegou a buscá-la).
+fn finish_wave(app: &AppHandle, shared: &Shared) {
+    if let Some(Ok(h)) = app.get_webview_window("wave").map(|w| w.hwnd()) {
+        platform::hide_window(h.0 as isize);
+    }
+    *shared.wave_frame.lock().unwrap() = None;
+    shared.wave_on.store(false, Ordering::SeqCst);
+}
+
+#[tauri::command]
+async fn play_wave(app: AppHandle, wave: WaveReq) -> Result<(), String> {
+    let shared = app.state::<Arc<Shared>>().inner().clone();
+    // nada salta sobre tela cheia (a captura de vídeo protegido sairia preta)
+    // e uma onda por vez
+    if shared.fullscreen.load(Ordering::Relaxed) || shared.wave_on.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let at = now_ms();
+    let (Some(main), Some(wv)) = (app.get_webview_window("main"), app.get_webview_window("wave")) else {
+        shared.wave_on.store(false, Ordering::SeqCst);
+        return Ok(());
+    };
+    let Some(m) = target_monitor(&main, &shared) else {
+        shared.wave_on.store(false, Ordering::SeqCst);
+        return Ok(());
+    };
+    let (pos, size) = (*m.position(), *m.size());
+    let duration = wave.duration.clamp(300, 6000);
+    let bulge = if wave.bulge.is_finite() { wave.bulge.clamp(0.0, 40.0) } else { 0.0 };
+
+    // a captura vem antes de mostrar a janela da onda, senão ela sairia na foto
+    let mut capture = false;
+    if bulge > 0.0 {
+        let (x, y, w, h) = (pos.x, pos.y, size.width as i32, size.height as i32);
+        let frame = blocking(move || platform::capture_screen(x, y, w, h)).await?;
+        capture = frame.is_some();
+        *shared.wave_frame.lock().unwrap() = frame;
+    }
+
+    let _ = wv.set_position(pos);
+    // 1 px mais baixa que o monitor: uma janela "sempre no topo" que cobre o
+    // monitor inteiro o Windows conta como app em tela cheia, e a ilha (e o
+    // que mais consulta isso, como as notificações) se esconderia na onda
+    let size_wave = PhysicalSize::new(size.width, size.height.saturating_sub(1));
+    let _ = wv.set_size(size_wave);
+    // mostra sem ativar e logo abaixo da ilha, que continua por cima da onda
+    if let (Ok(a), Ok(b)) = (wv.hwnd(), main.hwnd()) {
+        platform::show_below(a.0 as isize, b.0 as isize);
+    }
+    let _ = app.emit_to(
+        "wave",
+        "wave:play",
+        WavePlay {
+            color: wave.color,
+            intensity: if wave.intensity == "medium" { "medium".into() } else { "subtle".into() },
+            duration,
+            bulge: if capture { bulge } else { 0.0 },
+            cy: wave.cy.clamp(0.0, 400.0),
+            width: size_wave.width,
+            height: size_wave.height,
+            scale: m.scale_factor(),
+            capture,
+            at,
+        },
+    );
+
+    // prazo de segurança: se a página da onda não avisar o fim (recarregou,
+    // travou), a janela some do mesmo jeito e não bloqueia as próximas
+    let gen = shared.wave_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(duration as u64 + 4000));
+        if shared.wave_gen.load(Ordering::SeqCst) == gen && shared.wave_on.load(Ordering::SeqCst) {
+            finish_wave(&app, &shared);
+        }
+    });
+    Ok(())
+}
+
+/// Captura da onda atual em bytes crus (ver `platform::capture_screen`); vazia
+/// se não houver. Sai do `Shared` ao entregar: o buffer é liberado na hora.
+#[tauri::command]
+fn wave_frame(shared: tauri::State<'_, Arc<Shared>>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(shared.wave_frame.lock().unwrap().take().unwrap_or_default())
+}
+
+/// A página da onda terminou de animar (e já limpou o quadro).
+#[tauri::command]
+fn wave_done(app: AppHandle, shared: tauri::State<'_, Arc<Shared>>) {
+    finish_wave(&app, &shared);
+}
+
+/// Janela da onda: cobre o monitor da ilha, transparente, sem borda nem foco,
+/// fora da barra de tarefas e com o clique atravessando. Criada escondida no
+/// início, para a onda não esperar o WebView carregar. Daí em diante quem a
+/// mostra e esconde é o Win32 (`platform::show_below`/`hide_window`), nunca o
+/// `show()`/`hide()` do Tauri, que a ativaria.
+fn build_wave_window(app: &tauri::App) -> tauri::Result<()> {
+    let w = tauri::WebviewWindowBuilder::new(app, "wave", tauri::WebviewUrl::App("wave.html".into()))
+        .title("Island")
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .focusable(false)
+        .visible(false)
+        .build()?;
+    let _ = w.set_ignore_cursor_events(true);
+    Ok(())
 }
 
 #[tauri::command]
@@ -420,6 +587,7 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>, vol: plat
             // verdade. ~330 ms para reagir rápido a maximizar/Alt+Tab.
             if tick % 10 == 0 {
                 let (fs, exclusive) = fast.fullscreen();
+                shared.fullscreen.store(fs, Ordering::Relaxed);
                 let cov = match (win.outer_position(), win.outer_size(), win.scale_factor()) {
                     (Ok(p), Ok(sz), Ok(sf)) => {
                         // área da pílula compacta (com folga), em px físicos
@@ -630,6 +798,20 @@ fn spawn_accent(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
+/// Dispositivo USB conectado: dorme no aviso do cfgmgr32 (zero custo parado)
+/// e manda o nome para a ilha, que decide o aviso e a onda (`modules.usb`,
+/// `usb_wave`). Se a assinatura falhar, tenta de novo a cada 60 s.
+fn spawn_usb(app: AppHandle) {
+    thread::spawn(move || loop {
+        if let Some(watch) = platform::UsbWatch::start() {
+            while let Some(name) = watch.next() {
+                let _ = app.emit_to("main", "island:usb", name);
+            }
+        }
+        thread::sleep(Duration::from_secs(60));
+    });
+}
+
 /// Notificações de outros apps (precisa de identidade de pacote).
 fn spawn_notifs(app: AppHandle) {
     thread::spawn(move || {
@@ -745,7 +927,8 @@ fn main() {
             set_hit_rect, set_hud_blocked, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
-            list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color
+            list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color,
+            play_wave, wave_frame, wave_done
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -782,6 +965,7 @@ fn main() {
             #[cfg(not(debug_assertions))]
             platform::autostart_quote_path();
             build_tray(app)?;
+            build_wave_window(app)?;
             spawn_volume_osd(shared.clone());
             let vol = start_volume(shared.clone());
             spawn_fast(app.handle().clone(), win, shared.clone(), vol);
@@ -790,6 +974,7 @@ fn main() {
             spawn_notifs(app.handle().clone());
             spawn_brightness(app.handle().clone());
             spawn_accent(app.handle().clone(), shared.clone());
+            spawn_usb(app.handle().clone());
             update::spawn(app.handle().clone());
             Ok(())
         })
