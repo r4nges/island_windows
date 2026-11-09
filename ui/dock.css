@@ -18,7 +18,11 @@ button { font: inherit; color: inherit; background: none; border: 0; outline: no
   /* canto de 8 px = o canto nativo do Windows 11 que arredonda o desfoque por
      baixo (escala com o DPI como o px CSS): um painel só, sem curva por fora */
   padding: 7px 9px; border-radius: 8px;
-  transition: translate .45s var(--ease), left .45s var(--ease);
+  transition: translate .45s var(--ease), left .45s var(--ease),
+              width .45s var(--ease), bottom .45s var(--ease), padding .45s var(--ease), border-radius .45s var(--ease);
+  /* deixa a largura ir de "do tamanho dos ícones" (auto) a 100% animando, no
+     modo barra; sem suporte a transição só pula, sem quebrar nada */
+  interpolate-size: allow-keywords;
 }
 /* o vidro fica num pseudo-elemento para a ampliação dos ícones não deformá-lo */
 .dock::before {
@@ -30,11 +34,41 @@ button { font: inherit; color: inherit; background: none; border: 0; outline: no
     inset 0 1px 0 rgba(255,255,255,var(--hi)),
     inset 0 0 0 1px rgba(255,255,255,var(--edge)),
     0 18px 50px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.18);
+  transition: box-shadow .45s var(--ease);
 }
 body[data-glass="dark"]  { --glass-bg: rgba(28, 28, 34, .42); --blur: 28px; --hi: .16; --edge: .09; }
 body[data-glass="light"] { --glass-bg: rgba(255, 255, 255, .16); --blur: 30px; --hi: .45; --edge: .22; }
 body[data-glass="clear"] { --glass-bg: rgba(255, 255, 255, .05); --blur: 14px; --hi: .35; --edge: .18; }
 body[data-pos="left"] .dock { left: 12px; translate: 0 0; }
+
+/* ---------- modo barra: janela maximizada no monitor da dock (`dock:max`)
+ * A dock vira uma barra colada no pé da tela, de ponta a ponta, preenchendo
+ * exatamente a faixa reservada do Rust (BOTTOM_GAP 10 + DOCK_PAD 7 × 2 + ícone
+ * + TOP_GAP 4): a borda de cima encosta na de baixo da janela maximizada.
+ * Os ícones não saem do lugar na troca: o que era margem (10 embaixo, 4 em
+ * cima) vira espaço interno (17 embaixo, 11 em cima) e só o vidro se estica
+ * até as bordas; os pontos de app aberto ficam no respiro de baixo e
+ * equilibram os 3 px a mais. Centrada, a dock continua em left 50% e
+ * translate -50% com largura 100%: cresce igual para os dois lados. Quina
+ * reta, sem sombra por fora e sem filete nos lados e embaixo; só o claro do
+ * topo, que separa a barra da janela. */
+/* o alinhamento dos ícones vale fora do modo barra também (na largura "do
+   tamanho dos ícones" não faz diferença): na volta, enquanto a largura encolhe,
+   eles continuam parados em vez de pular para a ponta */
+.dock { justify-content: center; }
+body[data-pos="left"] .dock { justify-content: flex-start; }
+body[data-max="on"] .dock {
+  bottom: 0; width: 100%;
+  padding: 11px 9px 17px; border-radius: 0;
+}
+body[data-max="on"] .dock::before {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,var(--hi)),
+    inset 0 0 0 1px rgba(255,255,255,0),
+    0 0 0 rgba(0,0,0,0), 0 0 0 rgba(0,0,0,0);
+}
+/* à esquerda: a barra começa na borda e o espaço interno absorve os 12 px */
+body[data-pos="left"][data-max="on"] .dock { left: 0; padding-left: 21px; }
 
 .app { position: relative; width: var(--icon); height: var(--icon); display: grid; place-items: center;
        transform-origin: 50% 100%; transition: transform .18s var(--ease), margin .18s var(--ease); }

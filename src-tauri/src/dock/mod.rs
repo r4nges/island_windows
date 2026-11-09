@@ -16,6 +16,12 @@
 //! - thread `dock-icons`: extrai os ícones reais (sob demanda, com cache);
 //! - processo vigia (`taskbar.rs`): devolve a barra nativa se o Island morrer.
 //!
+//! Modo barra: com uma janela maximizada no monitor principal (`dock:max`,
+//! decidido em `win.rs`), a página estica a dock de ponta a ponta e a cola no
+//! pé da tela, preenchendo exatamente a faixa reservada (`Geo::appbar`): a
+//! borda de cima dela encosta na de baixo da janela maximizada, sem a faixa de
+//! papel de parede dos lados da dock flutuante.
+//!
 //! Ligar/desligar roda numa thread à parte (`reconcile`): criar janela num
 //! comando síncrono trava o Tauri no Windows, e duas trocas seguidas no
 //! painel se resolvem pela última configuração.
@@ -44,7 +50,9 @@ use stub as sys;
 /// com Forte, chega a uns 155).
 const DOCK_H: f64 = 190.0;
 /// Margem entre a dock e o pé da tela, e folga acima dela na faixa reservada
-/// (px CSS; os mesmos de `ui/dock.css`).
+/// (px CSS; os mesmos de `ui/dock.css`). No modo barra a dock ocupa a faixa
+/// inteira: altura = BOTTOM_GAP + DOCK_PAD * 2 + ícone + TOP_GAP, e o CSS soma
+/// as mesmas parcelas.
 const BOTTOM_GAP: f64 = 10.0;
 const TOP_GAP: f64 = 4.0;
 /// Espaço interno da dock acima e abaixo do ícone (px CSS)
@@ -400,23 +408,26 @@ pub struct DockInit {
     cfg: Taskbar,
     light: bool,
     items: Vec<ItemOut>,
+    /// modo barra (há janela maximizada no monitor da dock)
+    max: bool,
 }
 
 /// Estado inicial da página da dock (depois chegam `dock:items`, `dock:cfg`,
-/// `dock:theme` e `dock:hover`).
+/// `dock:theme`, `dock:hover` e `dock:max`).
 #[tauri::command]
 pub async fn dock_init() -> DockInit {
     let s = STATE.lock().unwrap();
     match &s.run {
-        Some(r) => DockInit { cfg: r.cfg.clone(), light: r.engine.h.light(), items: r.engine.h.items() },
-        None => DockInit { cfg: s.cfg.clone(), light: false, items: Vec::new() },
+        Some(r) => DockInit { cfg: r.cfg.clone(), light: r.engine.h.light(), items: r.engine.h.items(), max: r.engine.h.max() },
+        None => DockInit { cfg: s.cfg.clone(), light: false, items: Vec::new(), max: false },
     }
 }
 
 /// A página mediu a dock: `bar` = o vidro, `hit` = a área clicável (a dock e
-/// os ícones ampliados), em px CSS da janela.
+/// os ícones ampliados), em px CSS da janela; `square` = o vidro está de quina
+/// reta (modo barra, ou quase: o raio do CSS já passou da metade).
 #[tauri::command]
-pub async fn dock_layout(bar: Rect, hit: Rect) {
+pub async fn dock_layout(bar: Rect, hit: Rect, square: Option<bool>) {
     let s = STATE.lock().unwrap();
     let Some(r) = &s.run else { return };
     *r.hover.hit.lock().unwrap() = Some(hit);
@@ -433,6 +444,7 @@ pub async fn dock_layout(bar: Rect, hit: Rect) {
         let (l, t, r, b) = (px(bar.x), px(bar.y), px(bar.x + bar.w), px(bar.y + bar.h));
         (ox + l, oy + t, r - l, b - t)
     });
+    r.engine.h.set_square(square.unwrap_or(false));
     r.engine.h.set_glass(glass);
 }
 

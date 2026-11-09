@@ -26,6 +26,10 @@ impl Handle {
     pub fn set_glass(&self, _g: Option<(i32, i32, i32, i32)>) {}
     pub fn set_visible(&self, _v: bool) {}
     pub fn set_appbar(&self, _r: (i32, i32, i32, i32)) {}
+    pub fn set_square(&self, _v: bool) {}
+    pub fn max(&self) -> bool {
+        false
+    }
     pub fn items(&self) -> Vec<ItemOut> {
         Vec::new()
     }

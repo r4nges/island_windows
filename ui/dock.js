@@ -1,7 +1,9 @@
 /* Island — barra de tarefas (dock). Sem build: JS puro.
  * No app recebe do Rust a lista de apps (`dock:items`), as opções (`dock:cfg`),
- * o tema (`dock:theme`) e o hover (`dock:hover`); aberto no navegador roda em
- * modo demo. Toda ação volta ao Rust por comando: quem foca, minimiza e abre
+ * o tema (`dock:theme`), o hover (`dock:hover`) e o modo barra (`dock:max`:
+ * janela maximizada no monitor, a dock vira barra colada no pé da tela);
+ * aberto no navegador roda em modo demo (tecla M ou `?max` alternam o modo
+ * barra). Toda ação volta ao Rust por comando: quem foca, minimiza e abre
  * apps é ele. */
 (() => {
   "use strict";
@@ -27,7 +29,7 @@
   // escala máxima extra do ícone sob o cursor (mockup: Leve 0.28, Forte 0.6)
   const MAG = { off: 0, subtle: 0.28, strong: 0.6 };
 
-  const S = { cfg: DEFAULT_CFG, light: false, items: [] };
+  const S = { cfg: DEFAULT_CFG, light: false, items: [], max: false };
   const icons = new Map(); // chave do app -> data URL | null (carregando ou sem ícone)
   const els = new Map(); // chave do app -> botão
 
@@ -54,6 +56,14 @@
     document.documentElement.style.setProperty("--icon", (SIZE[c.size] || 32) + "px");
     resetMag();
     report(600); // a dock desliza até o lugar novo (.45 s)
+  }
+
+  // modo barra: o CSS faz o morph (.45 s) e o vidro nativo segue a cada quadro
+  function applyMax() {
+    const v = S.max ? "on" : "off";
+    if (document.body.dataset.max === v) return;
+    document.body.dataset.max = v;
+    report(600);
   }
 
   // ------------------------------------------------------------ apps
@@ -168,8 +178,11 @@
     const f = (v) => Math.round(v * 100) / 100;
     const bar = { x: f(r.left), y: f(r.top), w: f(r.width), h: f(r.height) };
     const hit = { x: q(left), y: q(top), w: q(right - left), h: q(r.bottom - top) };
-    const key = JSON.stringify([bar, hit]);
-    if (key !== lastSent) { lastSent = key; fire("dock_layout", { bar, hit }); }
+    // vidro nativo de quina reta (modo barra) quando o raio do CSS já passou
+    // da metade dos 8 px: o canto nativo é tudo ou nada, troca no meio do morph
+    const square = parseFloat(getComputedStyle(dock).borderTopLeftRadius) < 4;
+    const key = JSON.stringify([bar, hit, square]);
+    if (key !== lastSent) { lastSent = key; fire("dock_layout", { bar, hit, square }); }
     if (performance.now() < until) raf = requestAnimationFrame(measure);
   }
   window.addEventListener("resize", () => report(100));
@@ -181,12 +194,15 @@
   // o Rust tirou o mouse da dock (a página não vê o mouseleave quando a janela
   // volta a deixar os cliques passarem)
   listen("dock:hover", (inside) => { if (!inside) resetMag(); });
+  listen("dock:max", (on) => { S.max = !!on; applyMax(); });
 
   invoke("dock_init").then((init) => {
     if (!init) return;
     S.cfg = init.cfg || DEFAULT_CFG;
     S.light = !!init.light;
     S.items = init.items || [];
+    S.max = !!init.max;
+    applyMax();
     applyCfg();
     render();
   }).catch(() => {});
@@ -204,8 +220,15 @@
           { key: "pin:steam", name: "Steam", pinned: true, open: 0, focus: false },
           { key: "app:terminal", name: "Terminal", pinned: false, open: 1, focus: false },
         ],
+        max: new URLSearchParams(location.search).has("max"),
       };
     return null;
   }
-  if (DEMO) document.body.classList.add("demo");
+  if (DEMO) {
+    document.body.classList.add("demo");
+    // M alterna o modo barra (como maximizar/restaurar uma janela)
+    addEventListener("keydown", (e) => {
+      if (e.key === "m" || e.key === "M") { S.max = !S.max; applyMax(); }
+    });
+  }
 })();

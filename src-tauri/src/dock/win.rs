@@ -10,6 +10,12 @@
 //!   apps e a lista de fixados da barra (`Taskband\Favorites`);
 //! - mensagens: AppBar, `TaskbarCreated` (Explorer reiniciou), fim da sessão,
 //!   troca de resolução e os pedidos das outras threads (vidro, reserva).
+//!
+//! Modo barra: com uma janela listada maximizada no monitor principal, a
+//! página estica a dock de ponta a ponta no pé da tela (`dock:max`). Quem
+//! acorda a leitura é `EVENT_OBJECT_LOCATIONCHANGE` (maximizar e restaurar não
+//! têm evento próprio), filtrado no gancho para só contar quando o estado de
+//! uma janela listada muda; aí relê só isso, sem refazer a lista.
 
 use super::taskbar::{self, Hider};
 use super::ItemOut;
@@ -70,6 +76,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEACTIVATE, WM_NCHITTEST, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WNDCLASSW, WS_EX_APPWINDOW,
     WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
+// modo barra (janela maximizada no monitor da dock)
+use windows::Win32::Graphics::Dwm::DWMWCP_DONOTROUND;
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsZoomed, EVENT_OBJECT_LOCATIONCHANGE};
 
 // ------------------------------------------------------------ utilidades
 
@@ -418,6 +428,10 @@ pub struct Shared {
     appbar: Mutex<Option<(i32, i32, i32, i32)>>,
     dock: AtomicIsize,
     visible: AtomicBool,
+    /// modo barra: há janela listada maximizada no monitor principal
+    max: AtomicBool,
+    /// a página pediu o vidro de quina reta (dock esticada no pé da tela)
+    square: AtomicBool,
 }
 
 const WM_APP_GLASS: u32 = WM_APP + 1;
@@ -427,6 +441,8 @@ const ID_REFRESH: usize = 1;
 
 const DIRTY_LIST: u32 = 1;
 const DIRTY_PINS: u32 = 2;
+/// só o estado maximizado de uma janela listada mudou (ver `update_max`)
+const DIRTY_MAX: u32 = 4;
 
 // O gancho de eventos é uma função `extern "system"` sem contexto: o que ele
 // precisa fica em estáticos (só existe uma dock por processo).
@@ -442,6 +458,8 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// janelas listadas na última leitura (o gancho ignora as outras)
     static TRACKED: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+    /// das listadas, as maximizadas no monitor principal na última leitura
+    static MAXED: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
 }
 
 struct State {
@@ -460,6 +478,10 @@ struct State {
     last: Vec<ItemOut>,
     on_display: Box<dyn Fn() + Send>,
     own_pid: u32,
+    /// último `dock:max` emitido
+    max: bool,
+    /// canto aplicado ao vidro: quina reta (`DWMWCP_DONOTROUND`) ou redondo
+    square: bool,
 }
 
 /// Roda `f` com o estado da thread. `false` se ele já está em uso (uma chamada
@@ -489,11 +511,71 @@ fn tracked(h: isize) -> bool {
     TRACKED.with(|t| t.try_borrow().map(|t| t.contains(&h)).unwrap_or(true))
 }
 
+/// Estado de uma janela que decide o modo barra.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WinGeom {
+    pub zoomed: bool,
+    pub iconic: bool,
+    /// retângulo da janela em px físicos da tela
+    pub rect: RECT,
+}
+
+/// A janela está maximizada no monitor `mon` (retângulo inteiro dele)? A
+/// maximizada passa um pouco das bordas do monitor (a moldura invisível de
+/// uns 8 px), então conta o centro dela, não o encaixe exato; minimizada não
+/// conta (quem desce para a barra continua `IsZoomed` em algumas versões).
+pub(crate) fn maxed_on(w: &WinGeom, mon: &RECT) -> bool {
+    if !w.zoomed || w.iconic {
+        return false;
+    }
+    let (cx, cy) = ((w.rect.left + w.rect.right) / 2, (w.rect.top + w.rect.bottom) / 2);
+    cx >= mon.left && cx < mon.right && cy >= mon.top && cy < mon.bottom
+}
+
+/// Retângulo do monitor principal (o da dock), px físicos.
+fn primary_rect() -> Option<RECT> {
+    unsafe {
+        let m = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        GetMonitorInfoW(m, &mut mi).as_bool().then_some(mi.rcMonitor)
+    }
+}
+
+/// A janela está maximizada no monitor principal agora?
+fn maxed_now(h: HWND) -> bool {
+    unsafe {
+        // `IsZoomed` primeiro: é o caso comum (janela normal sendo arrastada)
+        if !IsZoomed(h).as_bool() {
+            return false;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(h, &mut rect).is_err() {
+            return false;
+        }
+        let Some(mon) = primary_rect() else { return false };
+        maxed_on(&WinGeom { zoomed: true, iconic: IsIconic(h).as_bool(), rect }, &mon)
+    }
+}
+
 unsafe extern "system" fn on_event(_: HWINEVENTHOOK, ev: u32, h: HWND, obj: i32, child: i32, _: u32, _: u32) {
     if obj != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 || h.is_invalid() {
         return;
     }
     let hv = h.0 as isize;
+    // chega a cada movimento de qualquer janela (o do cursor já caiu no filtro
+    // acima): só conta janela listada que entrou ou saiu do maximizado no
+    // monitor principal; o resto sai daqui sem tocar em nada
+    if ev == EVENT_OBJECT_LOCATIONCHANGE {
+        if tracked(hv) {
+            let was = MAXED.with(|m| m.try_borrow().map(|m| m.contains(&hv)).ok());
+            let now = maxed_now(h);
+            if was != Some(now) {
+                DIRTY.fetch_or(DIRTY_MAX, Ordering::SeqCst);
+                arm_timer();
+            }
+        }
+        return;
+    }
     let top = || GetAncestor(h, GA_ROOT) == h;
     let dirty = match ev {
         EVENT_SYSTEM_FOREGROUND => true,
@@ -682,6 +764,11 @@ impl State {
     /// Lê janelas e fixados de novo, agrupa e emite `dock:items` se mudou.
     fn refresh(&mut self) {
         let d = DIRTY.swap(0, Ordering::SeqCst);
+        if d & (DIRTY_LIST | DIRTY_PINS) == 0 {
+            // só maximizou/restaurou uma janela listada: a lista é a mesma
+            self.update_max();
+            return;
+        }
         if d & DIRTY_PINS != 0 {
             self.pins = load_pins();
         }
@@ -732,6 +819,22 @@ impl State {
         if out != self.last {
             let _ = self.app.emit_to("dock", "dock:items", &out);
             self.last = out;
+        }
+        self.update_max();
+    }
+
+    /// Modo barra: alguma janela listada (visível, fora de outra área virtual,
+    /// que não é do Island) está maximizada no monitor principal? Emite
+    /// `dock:max` só quando muda.
+    fn update_max(&mut self) {
+        let maxed: HashSet<isize> =
+            TRACKED.with(|t| t.borrow().iter().copied().filter(|&h| maxed_now(hwnd(h))).collect());
+        let on = !maxed.is_empty();
+        MAXED.with(|m| *m.borrow_mut() = maxed);
+        if on != self.max {
+            self.max = on;
+            self.shared.max.store(on, Ordering::SeqCst);
+            let _ = self.app.emit_to("dock", "dock:max", on);
         }
     }
 
@@ -791,6 +894,16 @@ impl State {
     fn apply_glass(&mut self) {
         let g = *self.shared.glass.lock().unwrap();
         let visible = self.shared.visible.load(Ordering::SeqCst);
+        // dock esticada no pé da tela: sem o canto nativo de 8 px, senão o
+        // desfoque some nas quinas da barra; flutuando, volta a arredondar
+        let square = self.shared.square.load(Ordering::SeqCst);
+        if square != self.square && !self.glass.is_invalid() {
+            self.square = square;
+            let pref = if square { DWMWCP_DONOTROUND } else { DWMWCP_ROUND };
+            unsafe {
+                let _ = DwmSetWindowAttribute(self.glass, DWMWA_WINDOW_CORNER_PREFERENCE, &pref as *const _ as *const _, 4);
+            }
+        }
         unsafe {
             match g {
                 Some((x, y, w, h)) if visible && w > 0 && h > 0 => {
@@ -930,6 +1043,8 @@ impl Engine {
             appbar: Mutex::new(Some(appbar)),
             dock: AtomicIsize::new(0),
             visible: AtomicBool::new(true),
+            max: AtomicBool::new(false),
+            square: AtomicBool::new(false),
         });
         let (ready_tx, ready_rx) = mpsc::sync_channel::<isize>(1);
         let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -976,6 +1091,17 @@ impl Handle {
     pub fn set_dock(&self, h: isize) {
         self.shared.dock.store(h, Ordering::SeqCst);
         self.post(WM_APP_GLASS);
+    }
+
+    /// Quina reta no vidro (modo barra). Só guarda: vale no próximo `set_glass`,
+    /// que a página manda junto.
+    pub fn set_square(&self, v: bool) {
+        self.shared.square.store(v, Ordering::SeqCst);
+    }
+
+    /// Modo barra (para o estado inicial da página).
+    pub fn max(&self) -> bool {
+        self.shared.max.load(Ordering::SeqCst)
     }
 
     pub fn set_appbar(&self, r: (i32, i32, i32, i32)) {
@@ -1087,6 +1213,8 @@ fn shell_thread(
             (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
             (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE),
             (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
+            // maximizar/restaurar (modo barra); filtrado em `on_event`
+            (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
         ]
         .iter()
         .map(|&(a, b)| SetWinEventHook(a, b, None, Some(on_event), 0, 0, flags))
@@ -1108,6 +1236,8 @@ fn shell_thread(
             last: Vec::new(),
             on_display,
             own_pid: GetCurrentProcessId(),
+            max: false,
+            square: false,
         };
         STATE.with(|s| *s.borrow_mut() = Some(state));
         with_state(|s| s.appbar_set());
@@ -1150,6 +1280,7 @@ fn shell_thread(
         }
         HELPER.store(0, Ordering::SeqCst);
         TRACKED.with(|t| t.borrow_mut().clear());
+        MAXED.with(|m| m.borrow_mut().clear());
         CoUninitialize();
     }
 }
@@ -1424,7 +1555,8 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bgra_to_rgba, parse_favorites, valid_pidl};
+    use super::{bgra_to_rgba, maxed_on, parse_favorites, valid_pidl, WinGeom};
+    use windows::Win32::Foundation::RECT;
 
     fn entry(pidl: &[u8]) -> Vec<u8> {
         let mut v = vec![0u8];
@@ -1476,5 +1608,28 @@ mod tests {
         let mut px = vec![200, 0, 0, 100];
         bgra_to_rgba(&mut px);
         assert_eq!(px, vec![0, 0, 200, 100]);
+    }
+
+    fn geom(zoomed: bool, iconic: bool, l: i32, t: i32, r: i32, b: i32) -> WinGeom {
+        WinGeom { zoomed, iconic, rect: RECT { left: l, top: t, right: r, bottom: b } }
+    }
+
+    #[test]
+    fn maximizada_no_monitor_principal() {
+        let prim = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        // maximizada de verdade: passa 8 px das bordas e para acima da dock
+        assert!(maxed_on(&geom(true, false, -8, -8, 1928, 1028), &prim));
+        // maximizada no monitor da direita (outro monitor): não conta
+        assert!(!maxed_on(&geom(true, false, 1912, -8, 3848, 1088), &prim));
+        // monitor à esquerda do principal (coordenadas negativas)
+        assert!(!maxed_on(&geom(true, false, -1928, -8, 8, 1088), &prim));
+        // do tamanho da tela mas não maximizada (arrastada, encaixada): não conta
+        assert!(!maxed_on(&geom(false, false, 0, 0, 1920, 1020), &prim));
+        // minimizada (ainda marcada como maximizada) fica longe e não conta
+        assert!(!maxed_on(&geom(true, true, -32000, -32000, -31840, -31972), &prim));
+        assert!(!maxed_on(&geom(true, true, -8, -8, 1928, 1028), &prim));
+        // a mesma janela da direita, medida contra o monitor dela, conta
+        let m2 = RECT { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        assert!(maxed_on(&geom(true, false, 1912, -8, 3848, 1088), &m2));
     }
 }
