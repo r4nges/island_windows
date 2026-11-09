@@ -60,6 +60,18 @@ impl Fast {
     }
 }
 
+/// Sem tela interna no mock: nunca devolve brilho.
+pub struct Brightness;
+
+impl Brightness {
+    pub fn new() -> Option<Self> {
+        Some(Brightness)
+    }
+    pub fn read(&self) -> Option<u8> {
+        None
+    }
+}
+
 pub fn battery() -> Option<Battery> {
     Some(Battery { percent: 78, charging: false })
 }

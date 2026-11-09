@@ -106,13 +106,14 @@ img { display: block; }
 .pill[data-mode="media"]    .l-media,
 .pill[data-mode="timer"]    .l-timer,
 .pill[data-mode="volume"]   .l-volume,
+.pill[data-mode="brightness"] .l-bright,
 .pill[data-mode="toast"]    .l-toast,
 .pill[data-mode="expanded"] .l-expanded {
   opacity: 1; filter: none; transform: none; pointer-events: auto;
   transition: opacity 0.3s ease 0.07s, filter 0.34s ease 0.05s, transform 0.5s var(--ease) 0.02s;
 }
 
-.l-media, .l-timer, .l-volume { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 4px; }
+.l-media, .l-timer, .l-volume, .l-bright { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 4px; }
 .art { object-fit: cover; background: #1c1c1e; }
 .art-sm { width: 22px; height: 22px; border-radius: 7px; }
 .art:not([src]) { visibility: hidden; }
@@ -145,6 +146,10 @@ circle { fill: none; stroke-linecap: round; }
 .l-volume .ico { width: 18px; height: 18px; display: grid; place-items: center; }
 .l-volume .bar { flex: 1; }
 .l-volume .num { width: 26px; text-align: right; font-size: 13px; font-weight: 600; color: var(--dim); }
+.l-bright { padding: 0 16px 0 14px; gap: 12px; }
+.l-bright .ico { width: 18px; height: 18px; display: grid; place-items: center; }
+.l-bright .bar { flex: 1; }
+.l-bright .num { width: 26px; text-align: right; font-size: 13px; font-weight: 600; color: var(--dim); }
 .bar { height: 5px; border-radius: 3px; background: var(--faint); overflow: hidden; }
 .bar .fill { height: 100%; width: 0; border-radius: inherit; background: #fff; transition: width .18s var(--ease); }
 .muted .l-volume .fill { background: var(--dim); }

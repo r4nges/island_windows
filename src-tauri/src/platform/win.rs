@@ -15,9 +15,17 @@ use windows::Networking::Connectivity::{NetworkConnectivityLevel, NetworkInforma
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamWithContentType};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::core::BSTR;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoSetProxyBlanket, CLSCTX_ALL, COINIT_MULTITHREADED, EOAC_NONE,
+    RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+};
 use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4, VT_UI1};
+use windows::Win32::System::Wmi::{
+    IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
@@ -255,6 +263,73 @@ impl Fast {
             let iy = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0) as i64;
             let area = ((m.right - m.left) as i64) * ((m.bottom - m.top) as i64);
             Some(area > 0 && ix * iy * 10 >= area * 6)
+        }
+    }
+}
+
+// ----------------------------------------------------- Brilho da tela (WMI)
+
+/// Brilho da tela interna via WMI (`root\WMI` → `WmiMonitorBrightness`).
+/// A conexão abre uma vez; a consulta roda a cada leitura porque o valor muda.
+/// Precisa de COM iniciado na thread (`init_thread`) e deve ficar nela.
+pub struct Brightness {
+    svc: IWbemServices,
+}
+
+impl Brightness {
+    pub fn new() -> Option<Self> {
+        unsafe {
+            let loc: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_ALL).ok()?;
+            let svc = loc
+                .ConnectServer(&BSTR::from("ROOT\\WMI"), &BSTR::new(), &BSTR::new(), &BSTR::new(), 0, &BSTR::new(), None)
+                .ok()?;
+            // 10 = RPC_C_AUTHN_WINNT, 0 = RPC_C_AUTHZ_NONE
+            CoSetProxyBlanket(
+                &svc,
+                10,
+                0,
+                windows::core::PCWSTR::null(),
+                RPC_C_AUTHN_LEVEL_CALL,
+                RPC_C_IMP_LEVEL_IMPERSONATE,
+                None,
+                EOAC_NONE,
+            )
+            .ok()?;
+            Some(Self { svc })
+        }
+    }
+
+    /// Brilho 0..100. `None` sem tela interna (monitor externo, desktop) ou em caso de erro.
+    pub fn read(&self) -> Option<u8> {
+        unsafe {
+            let en = self
+                .svc
+                .ExecQuery(
+                    &BSTR::from("WQL"),
+                    &BSTR::from("SELECT CurrentBrightness FROM WmiMonitorBrightness"),
+                    WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                    None,
+                )
+                .ok()?;
+            let mut objs = [None];
+            let mut got = 0u32;
+            let _ = en.Next(WBEM_INFINITE, &mut objs, &mut got);
+            if got == 0 {
+                return None;
+            }
+            let obj = objs[0].take()?;
+            let mut v = VARIANT::default();
+            obj.Get(windows::core::w!("CurrentBrightness"), 0, &mut v, None, None).ok()?;
+            let vt = v.Anonymous.Anonymous.vt;
+            let out = if vt == VT_UI1 {
+                Some(v.Anonymous.Anonymous.Anonymous.bVal)
+            } else if vt == VT_I4 {
+                Some(v.Anonymous.Anonymous.Anonymous.lVal.clamp(0, 100) as u8)
+            } else {
+                None
+            };
+            let _ = VariantClear(&mut v);
+            out.map(|b| b.min(100))
         }
     }
 }

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Modules {
     pub volume: bool,
+    pub brightness: bool,
     pub caps: bool,
     pub battery: bool,
     pub network: bool,
@@ -26,6 +27,7 @@ impl Default for Modules {
     fn default() -> Self {
         Self {
             volume: true,
+            brightness: true,
             caps: true,
             battery: true,
             network: true,

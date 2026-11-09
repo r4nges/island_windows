@@ -34,6 +34,7 @@
     vol0: svg('<path d="M11 5L6 9H3v6h3l5 4z" fill="currentColor"/><path d="M22 9l-6 6M16 9l6 6"/>'),
     vol1: svg('<path d="M11 5L6 9H3v6h3l5 4z" fill="currentColor"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/>'),
     vol2: svg('<path d="M11 5L6 9H3v6h3l5 4z" fill="currentColor"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/>'),
+    sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
     bolt: fillSvg('<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>'),
     leaf: svg('<path d="M5 19c0-8 6-14 15-14 0 9-6 15-14 15"/><path d="M5 19l7-7"/>'),
     rocket: svg('<path d="M5 15c-1 1-1.5 4-1.5 4.5S6 19 7 18"/><path d="M9 15l-3-3 2-4c3-4 7-5 12-5 0 5-1 9-5 12l-4 2z"/><circle cx="15" cy="9" r="1.5"/>'),
@@ -105,7 +106,7 @@
 
   // padrão igual ao settings.rs; só vale até o Rust responder (e no modo demo)
   const DEFAULT_CFG = {
-    modules: { volume: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true },
+    modules: { volume: true, brightness: true, caps: true, battery: true, network: true, track: true, clipboard: true, notifications: true, pomo_sound: true },
     aura: { intensity: "subtle", expanded: false, color: "auto" },
     scale: 1.0,
     monitor: null,
@@ -144,6 +145,7 @@
     media: [280, 32, 16],
     timer: [260, 32, 16],
     volume: [300, 38, 19],
+    brightness: [300, 38, 19],
     toast: [340, 54, 27],
     expanded: [480, 200, 34],
   };
@@ -587,6 +589,16 @@
     }
   }
   listen("island:fast", onFast);
+
+  // ------------------------------------------------------------ brilho
+  // o Rust só emite quando o valor muda (e nunca na primeira leitura)
+  $(".js-br-ico").innerHTML = I.sun;
+  function onBrightness(b) {
+    $(".js-br-fill").style.width = b + "%";
+    $(".js-br-num").textContent = b;
+    if (on("brightness")) hud("brightness", 1400);
+  }
+  listen("island:brightness", onBrightness);
 
   // ------------------------------------------------------------ sistema
   function sparkPath(arr, max) {
@@ -1150,7 +1162,7 @@
   const FS_OPTS = [["hide", "Esconder a ilha"], ["peek", "Deixar um traço"]];
   const SWATCHES = ["auto", "#ffffff", "#0a84ff", "#bf5af2", "#ff375f", "#ff9f0a", "#30d158"];
   const MODULE_LABELS = [
-    ["volume", "Volume"], ["caps", "Caps Lock"], ["battery", "Bateria e carregador"], ["network", "Internet caiu/voltou"],
+    ["volume", "Volume"], ["brightness", "Brilho"], ["caps", "Caps Lock"], ["battery", "Bateria e carregador"], ["network", "Internet caiu/voltou"],
     ["track", "Nova música"], ["clipboard", "Texto copiado"], ["notifications", "Notificações"], ["pomo_sound", "Som do pomodoro"],
   ];
   const hueHex = (h) => {
@@ -1420,7 +1432,7 @@
       onMedia({ title: "(2222) AO VIVO: INTERNACIONAL x GRÊMIO", artist: "", app: "Brave", playing: true, position: 48, duration: 0, updated_ms: Date.now() });
     } else play(0, true, 74);
 
-    let vol = 0.5, muted = false, caps = false, online = true, batt = 78;
+    let vol = 0.5, muted = false, caps = false, online = true, batt = 78, bright = 60;
     onFast({ volume: vol, muted, caps });
     const fakeProcs = (by) => [
       ["chrome", 4.2, 1.9e9, 31], ["Code", 2.1, 1.1e9, 12], ["Spotify", 1.4, 4.1e8, 6], ["explorer", 0.9, 1.6e8, 1],
@@ -1451,6 +1463,7 @@
       const k = e.key.toLowerCase();
       if (k === "v") { vol = (vol + 0.14) % 1.01; onFast({ volume: vol, muted, caps }); }
       if (k === "m") { muted = !muted; onFast({ volume: vol, muted, caps }); }
+      if (k === "l") { bright = bright >= 100 ? 5 : Math.min(100, bright + 15); onBrightness(bright); }
       if (k === "k") { caps = !caps; onFast({ volume: vol, muted, caps }); }
       if (k === "c") onClip(samples[si++ % samples.length]);
       if (k === "b") { demoState.charging = !demoState.charging; slowTick(); }

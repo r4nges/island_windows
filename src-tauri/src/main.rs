@@ -495,6 +495,25 @@ fn spawn_slow(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
+/// Brilho da tela interna a cada 250 ms (WMI); emite só quando muda, nunca na
+/// primeira leitura. Sem tela interna (ou sem WMI) a thread termina em silêncio.
+fn spawn_brightness(app: AppHandle) {
+    thread::spawn(move || {
+        platform::init_thread();
+        let Some(br) = platform::Brightness::new() else { return };
+        let Some(mut last) = br.read() else { return };
+        loop {
+            thread::sleep(Duration::from_millis(250));
+            if let Some(now) = br.read() {
+                if now != last {
+                    last = now;
+                    let _ = app.emit("island:brightness", now);
+                }
+            }
+        }
+    });
+}
+
 /// Notificações de outros apps (precisa de identidade de pacote).
 fn spawn_notifs(app: AppHandle) {
     thread::spawn(move || {
@@ -642,6 +661,7 @@ fn main() {
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());
+            spawn_brightness(app.handle().clone());
             update::spawn(app.handle().clone());
             Ok(())
         })
