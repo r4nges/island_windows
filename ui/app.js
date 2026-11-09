@@ -211,7 +211,10 @@
   }
   const panel = () => (S.drag ? "shelf" : S.view ? (["cpu", "ram", "gpu", "net"].includes(S.view) ? "detail" : S.view) : S.tab);
 
+  let hudBlockedSent = false;
   function render() {
+    // o Rust só esconde o aviso de volume do Windows quando o HUD da ilha aparece
+    if (hudBlocked() !== hudBlockedSent) { hudBlockedSent = !hudBlockedSent; fire("set_hud_blocked", { blocked: hudBlockedSent }); }
     const m = computeMode();
     const [w, h, r] = targetSize(m);
     const key = `${m}:${w}x${h}`;
@@ -303,8 +306,10 @@
 
   // ------------------------------------------------------------ HUD / toasts
   let hudTimer = 0;
+  /** HUDs/avisos suprimidos agora? (o Rust recebe isto via `set_hud_blocked`) */
+  function hudBlocked() { return !!(S.hover || S.drag || S.pinned || S.fullscreen); }
   function hud(kind, ms, data = {}) {
-    if (S.hover || S.drag || S.pinned || S.fullscreen) return; // nada salta sobre tela cheia
+    if (hudBlocked()) return; // nada salta sobre tela cheia
     S.hud = { kind, ...data };
     if (kind === "toast") {
       $(".js-t-ico").innerHTML = data.img ? `<img src="${data.img}" alt="">` : data.icon || "";
@@ -1391,6 +1396,7 @@
     if (cmd === "set_power_mode") return null;
     if (cmd === "user_info") return sleep(80, { name: "Rangel Macedo", login: "Rangel", picture: null });
     if (cmd === "power_action") return null;
+    if (cmd === "set_hud_blocked") return null;
     if (cmd === "list_monitors")
       return sleep(120, [{ id: "\\\\.\\DISPLAY1", width: 1920, height: 1080, primary: true }, { id: "\\\\.\\DISPLAY2", width: 2560, height: 1440, primary: false }]);
     if (cmd === "get_settings") return load("island.demo.cfg", null) || DEFAULT_CFG;

@@ -8,7 +8,7 @@ mod update;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -39,12 +39,27 @@ struct Shared {
     monitor: Mutex<Option<String>>,
     /// esconder o aviso de volume do Windows (`hide_volume_osd` com o aviso `volume` ligado)
     hide_osd: AtomicBool,
+    /// a página não mostraria o HUD agora (mouse em cima, fixada, arrastando
+    /// arquivo, app por baixo): mesmo teste do `hud()` do frontend
+    hud_blocked: AtomicBool,
+    /// última mudança de volume que vira HUD na ilha
+    osd_at: Mutex<Option<Instant>>,
+    /// thread que esconde o aviso do Windows (dorme até `wake_osd`)
+    osd_thread: OnceLock<thread::Thread>,
 }
 
 impl Shared {
     fn zoom(&self) -> f64 {
         let z = *self.zoom.lock().unwrap();
         if z > 0.0 { z } else { 1.0 }
+    }
+
+    /// O volume mudou e a ilha vai mostrar o HUD: acorda a thread do aviso.
+    fn wake_osd(&self) {
+        *self.osd_at.lock().unwrap() = Some(Instant::now());
+        if let Some(t) = self.osd_thread.get() {
+            t.unpark();
+        }
     }
 }
 
@@ -90,6 +105,12 @@ fn copy_text(state: tauri::State<'_, Arc<Shared>>, text: String) -> Result<(), S
     cb.set_text(text).map_err(|e| e.to_string())?;
     state.own_clip_seq.store(platform::clipboard_seq(), Ordering::SeqCst);
     Ok(())
+}
+
+/// O frontend avisa quando o HUD não apareceria (ver `Shared::hud_blocked`).
+#[tauri::command]
+fn set_hud_blocked(state: tauri::State<'_, Arc<Shared>>, blocked: bool) {
+    state.hud_blocked.store(blocked, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -343,8 +364,10 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 let _ = app.emit("island:hover", inside);
             }
 
-            // volume + caps a cada ~100 ms
-            if tick % 3 == 0 {
+            // volume + caps a cada ~100 ms; a cada volta (~33 ms) quando o
+            // aviso do Windows é escondido, para ele sumir mais rápido
+            let hide_osd = shared.hide_osd.load(Ordering::Relaxed);
+            if tick % 3 == 0 || hide_osd {
                 let (vol, muted) = match fast.volume() {
                     Some((v, m)) => (Some(v), m),
                     None => (None, false),
@@ -352,6 +375,16 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 let caps = fast.caps_lock();
                 let key = ((vol.unwrap_or(-1.0) * 100.0).round() as i32, muted, caps);
                 if last_fast != Some(key) {
+                    // volume/mudo mudou e a ilha vai mostrar o HUD: esconde o
+                    // aviso do Windows (sem HUD, o do Windows fica)
+                    if last_fast.is_some_and(|(v, m, _)| (v, m) != (key.0, key.1))
+                        && hide_osd
+                        && !covered_last
+                        && !inside_last
+                        && !shared.hud_blocked.load(Ordering::Relaxed)
+                    {
+                        shared.wake_osd();
+                    }
                     last_fast = Some(key);
                     let _ = app.emit("island:fast", Fast { volume: vol, muted, caps });
                 }
@@ -417,42 +450,26 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
     });
 }
 
-/// Esconde o aviso de volume do próprio Windows enquanto `Shared::hide_osd`
-/// estiver ligado. O Explorer mostra a janela do aviso a cada tecla de volume;
-/// aqui ela é escondida assim que aparece (~10 ms), mas só se o volume acabou
-/// de mudar: a mesma janela serve o aviso de brilho, que continua aparecendo.
-/// Desligada a opção (ou ao sair), nada mais é escondido e o Windows volta a
-/// mostrar o aviso na próxima tecla.
+/// Esconde o aviso de volume do próprio Windows. Dorme até o `spawn_fast`
+/// avisar (`Shared::wake_osd`) que o volume mudou com o HUD da ilha na tela;
+/// aí, por ~400 ms, esconde a janela do aviso assim que o Explorer a mostra
+/// (ele a mostra de novo a cada tecla). Ociosa não acorda nunca. Com a opção
+/// desligada (ou ao sair) ninguém a acorda e o Windows volta a mostrar o aviso
+/// na próxima tecla.
 fn spawn_volume_osd(shared: Arc<Shared>) {
     thread::spawn(move || {
-        let mut fast = platform::Fast::new();
+        let _ = shared.osd_thread.set(thread::current());
         let mut osd = platform::VolumeOsd::new();
-        let mut last: Option<(f32, bool)> = None;
-        let mut changed_at: Option<Instant> = None;
-        let mut tick: u64 = 0;
         loop {
-            if !shared.hide_osd.load(Ordering::Relaxed) {
-                last = None;
-                changed_at = None;
-                thread::sleep(Duration::from_millis(200));
-                continue;
-            }
-            tick += 1;
-            let visible = osd.visible();
-            // volume a cada ~100 ms; com o aviso na tela, a cada volta
-            if visible || tick % 10 == 0 {
-                let now = fast.volume();
-                if now != last {
-                    if last.is_some() {
-                        changed_at = Some(Instant::now());
-                    }
-                    last = now;
+            thread::park();
+            while shared.hide_osd.load(Ordering::Relaxed)
+                && shared.osd_at.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(400))
+            {
+                if osd.visible() {
+                    osd.hide();
                 }
+                thread::sleep(Duration::from_millis(10));
             }
-            if visible && changed_at.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) {
-                osd.hide();
-            }
-            thread::sleep(Duration::from_millis(10));
         }
     });
 }
@@ -665,7 +682,7 @@ fn main() {
         .manage(update::Updates::default())
         .manage(shortcuts::Bindings::default())
         .invoke_handler(tauri::generate_handler![
-            set_hit_rect, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
+            set_hit_rect, set_hud_blocked, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
             list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action
@@ -702,8 +719,8 @@ fn main() {
 
             autostart_first_run(app); // antes da bandeja, para o check já vir marcado
             build_tray(app)?;
-            spawn_fast(app.handle().clone(), win, shared.clone());
             spawn_volume_osd(shared.clone());
+            spawn_fast(app.handle().clone(), win, shared.clone());
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());
