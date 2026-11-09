@@ -555,21 +555,26 @@ fn spawn_slow(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
-/// Brilho da tela interna a cada 250 ms (WMI); emite só quando muda, nunca na
-/// primeira leitura. Sem tela interna (ou sem WMI) a thread termina em silêncio.
+/// Brilho da tela interna: assina o evento do WMI (zero custo parado) e emite
+/// só quando muda, nunca na leitura inicial. Quem liga/desliga o aviso é o
+/// frontend (`modules.brightness`). Sem tela interna, ou se a primeira leitura
+/// falha (driver ainda não pronto, tampa fechada no login) ou a assinatura
+/// quebra, tenta de novo a cada 60 s, sem nunca girar em loop rápido.
 fn spawn_brightness(app: AppHandle) {
     thread::spawn(move || {
         platform::init_thread();
-        let Some(br) = platform::Brightness::new() else { return };
-        let Some(mut last) = br.read() else { return };
         loop {
-            thread::sleep(Duration::from_millis(250));
-            if let Some(now) = br.read() {
-                if now != last {
-                    last = now;
-                    let _ = app.emit("island:brightness", now);
+            if let Some(br) = platform::Brightness::new() {
+                if let (Some(mut last), Some(watch)) = (br.read(), br.watch()) {
+                    while let Some(now) = watch.next() {
+                        if now != last {
+                            last = now;
+                            let _ = app.emit("island:brightness", now);
+                        }
+                    }
                 }
             }
+            thread::sleep(Duration::from_secs(60));
         }
     });
 }
@@ -722,6 +727,9 @@ fn main() {
             });
 
             autostart_first_run(app); // antes da bandeja, para o check já vir marcado
+            // 0.4.0 gravou o Run sem aspas; só reescreve se já existir, então autostart desligado continua desligado
+            #[cfg(not(debug_assertions))]
+            platform::autostart_quote_path();
             build_tray(app)?;
             spawn_volume_osd(shared.clone());
             spawn_fast(app.handle().clone(), win, shared.clone());
