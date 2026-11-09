@@ -891,7 +891,7 @@ mod user {
     use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
         KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -932,8 +932,18 @@ mod user {
         }
     }
 
-    /// Regrava `HKCU\...\Run\<name>` como `"<exe>"`, só se o valor já existir
-    /// (quem desligou o autostart não deve vê-lo voltar).
+    /// Só o valor sem aspas que aponta para este exe precisa ser regravado.
+    /// O plugin de autostart grava `<exe> ` (com espaço no fim, args vazios), por
+    /// isso o valor é aparado. Outro caminho (outra cópia do exe), valor já com
+    /// aspas, argumentos extras ou valor vazio: não mexe.
+    pub(super) fn should_quote(existing: &str, exe: &str) -> bool {
+        let e = existing.trim();
+        !e.is_empty() && !e.starts_with('"') && e.to_lowercase() == exe.trim().to_lowercase()
+    }
+
+    /// Regrava `HKCU\...\Run\<name>` como `"<exe>"`, só se o valor já existir e
+    /// for exatamente `exe` sem aspas (ver `should_quote`): quem desligou o
+    /// autostart não deve vê-lo voltar, e outra cópia do app não o redireciona.
     pub fn quote_run_value(name: &str, exe: &str) {
         let (k, v) = (wide(r"Software\Microsoft\Windows\CurrentVersion\Run"), wide(name));
         let data: Vec<u8> = wide(&format!("\"{exe}\"")).iter().flat_map(|c| c.to_le_bytes()).collect();
@@ -942,8 +952,14 @@ mod user {
             if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(k.as_ptr()), None, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut key).is_err() {
                 return;
             }
-            if RegQueryValueExW(key, PCWSTR(v.as_ptr()), None, None, None, None).is_ok() {
-                let _ = RegSetValueExW(key, PCWSTR(v.as_ptr()), None, REG_SZ, Some(&data));
+            let mut buf = vec![0u16; 2048];
+            let mut size = (buf.len() * 2) as u32;
+            let rc = RegGetValueW(key, PCWSTR::null(), PCWSTR(v.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as _), Some(&mut size));
+            if rc.is_ok() {
+                let n = (size as usize / 2).saturating_sub(1).min(buf.len());
+                if should_quote(&String::from_utf16_lossy(&buf[..n]), exe) {
+                    let _ = RegSetValueExW(key, PCWSTR(v.as_ptr()), None, REG_SZ, Some(&data));
+                }
             }
             let _ = RegCloseKey(key);
         }
@@ -1017,5 +1033,22 @@ mod user {
             }
         }
         best.map(|b| data_url(&b))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user::should_quote;
+    const EXE: &str = r"C:\Users\Rangel\AppData\Local\Island\island.exe";
+
+    #[test]
+    fn should_quote_cases() {
+        assert!(should_quote(EXE, EXE)); // sem aspas, igual
+        assert!(should_quote(&format!("{EXE} "), EXE)); // como o plugin grava (espaço no fim)
+        assert!(should_quote(&EXE.to_uppercase(), EXE)); // maiúsculas/minúsculas
+        assert!(!should_quote(&format!("\"{EXE}\""), EXE)); // já com aspas
+        assert!(!should_quote(r"C:\Users\Rangel\Documents\island-teste\Island-teste.exe", EXE)); // outra cópia
+        assert!(!should_quote(&format!("{EXE} --flag"), EXE)); // argumentos extras
+        assert!(!should_quote("", EXE)); // vazio
     }
 }
