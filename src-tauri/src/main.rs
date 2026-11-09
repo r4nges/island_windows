@@ -620,6 +620,7 @@ fn autostart_first_run(app: &tauri::App) {
         return;
     }
     if app.autolaunch().enable().is_ok() {
+        platform::autostart_quote_path();
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(&marker, b"1");
     }
@@ -662,6 +663,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let al = app.autolaunch();
                 let on = al.is_enabled().unwrap_or(false);
                 let _ = if on { al.disable() } else { al.enable() };
+                if !on {
+                    platform::autostart_quote_path();
+                }
                 let _ = auto_item.set_checked(al.is_enabled().unwrap_or(false));
             }
             _ => {}

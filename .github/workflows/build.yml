@@ -67,9 +67,18 @@ jobs:
           $exe = Get-Item "$dir/*_x64-setup.exe"
           $sig = (Get-Content -Raw "$($exe.FullName).sig").Trim()
           $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/$($exe.Name)"
+          # notas = corpo da anotação da tag (git tag -a vX -m "..."); sem anotação, link do release.
+          # o checkout traz a tag como commit leve, então busca o objeto da tag antes de ler
+          $tag = $env:GITHUB_REF_NAME
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          $notes = ""
+          if ((git cat-file -t "refs/tags/$tag") -eq "tag") {
+            $notes = ((git tag -l --format='%(contents)' $tag) -join "`n").Trim()
+          }
+          if (-not $notes) { $notes = "Novidades: https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" }
           [ordered]@{
             version   = $ver
-            notes     = "Novidades: https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:GITHUB_REF_NAME"
+            notes     = $notes
             pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             platforms = @{ "windows-x86_64" = @{ signature = $sig; url = $url } }
           } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM "$dir/latest.json"

@@ -1117,9 +1117,19 @@
   const updBtn = $(".js-upd");
   const GREEN = { iconBg: "rgba(48,209,88,.18)", iconColor: "#30d158" };
   let updToasted = "";
+  // rodapé das configurações: versão instalada + (se houver) a nova e o botão Instalar
+  function settingsFoot() {
+    const u = S.update, p = u?.progress;
+    const right = !u
+      ? `<button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button>`
+      : `<button class="pillbtn sm primary upd js-install-upd"${p ? " disabled" : ""}>${p === "installing" ? "Instalando…" : p ? (p.pct != null ? `${p.pct}%` : "Baixando…") : `${I.upd} Instalar`}</button>`;
+    return `<span>Island ${esc(appVersion)}${u ? ` · <b class="s-new">v${esc(u.version)} disponível</b>` : ""}</span>${right}`;
+  }
   function renderUpd() {
     const u = S.update;
     updBtn.hidden = !u;
+    const foot = $(".s-foot");
+    if (foot) foot.innerHTML = settingsFoot();
     if (!u) return;
     const p = u.progress;
     updBtn.classList.toggle("busy", !!p);
@@ -1131,7 +1141,10 @@
     renderUpd();
     if (updToasted === u.version) return; // um aviso por versão, não a cada 6 h
     updToasted = u.version;
-    hud("toast", 5000, { icon: I.upd, ...GREEN, title: "Atualização disponível", sub: `Island v${u.version} · passe o mouse para instalar`, acc: "" });
+    // notas escritas à mão na tag viram o subtítulo; o "Novidades: <url>" automático não serve de resumo
+    const note = (u.notes || "").trim().split(/\r?\n/)[0].trim();
+    const sub = note && !note.startsWith("Novidades:") ? note : `Island v${u.version} · passe o mouse para instalar`;
+    hud("toast", 5000, { icon: I.upd, ...GREEN, title: "Atualização disponível", sub, acc: "" });
   }
   function onUpdateProgress(p) {
     if (p.state === "error") {
@@ -1144,13 +1157,14 @@
     S.update.progress = p.state === "installing" ? "installing" : { pct: p.pct };
     renderUpd();
   }
-  updBtn.addEventListener("click", () => {
+  function installUpdate() {
     if (!S.update || S.update.progress) return;
     S.update.progress = { pct: null };
     renderUpd();
     if (DEMO) { demo.fakeInstall(); return; }
     invoke("install_update").catch((e) => onUpdateProgress({ state: "error", msg: String(e) }));
-  });
+  }
+  updBtn.addEventListener("click", installUpdate);
   listen("island:update", onUpdate);
   listen("island:update-progress", onUpdateProgress);
   listen("island:update-none", (v) =>
@@ -1305,7 +1319,7 @@
         + (k === "volume" ? toggle("hide_volume_osd", "Esconder o aviso de volume do Windows", c.hide_volume_osd !== false) : "")).join("")}</div>
       <div class="sec">Notificações por app</div>
       ${appMuteList(c)}
-      <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
+      <div class="s-foot">${settingsFoot()}</div>`;
   }
 
   let cfgSaveTimer = 0;
@@ -1356,6 +1370,7 @@
     const mon = e.target.closest("[data-monitor]");
     if (mon) return setCfg("monitor", mon.dataset.monitor || null, { now: true });
     if (e.target.closest(".js-check-upd")) fire("check_update");
+    if (e.target.closest(".js-install-upd")) installUpdate();
   });
   $(".js-settings").addEventListener("input", (e) => {
     if (!e.target.classList.contains("js-hue")) return;
@@ -1486,7 +1501,7 @@
       if (k === "s") pinOpen("settings"); // como o item "Configurações" da bandeja
       if (k === "o") onShortcut("open"); // como o atalho global de abrir
       if (k === "f") { S.fullscreen = !S.fullscreen; render(); } // simula app em tela cheia
-      if (k === "u") { updToasted = ""; S.update = null; onUpdate({ version: "0.4.1", current: "0.4.0", notes: null }); }
+      if (k === "u") { updToasted = ""; S.update = null; onUpdate({ version: "0.4.1", current: "0.4.0", notes: "Novo HUD de brilho e correções\nSegunda linha das notas" }); }
     });
     // simula download e instalação; no fim "reinicia" (some o botão)
     demo.fakeInstall = () => {

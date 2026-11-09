@@ -803,6 +803,14 @@ pub fn user_info() -> UserInfo {
     UserInfo { name, login, picture: user::account_picture() }
 }
 
+/// O tauri-plugin-autostart grava o exe no Run sem aspas, o que quebra se o
+/// caminho tiver espaço. Regrava o valor `Island` como `"<exe>"`.
+pub fn autostart_quote_path() {
+    if let Ok(exe) = std::env::current_exe() {
+        user::quote_run_value("Island", &exe.to_string_lossy());
+    }
+}
+
 /// "sleep" | "restart" | "shutdown"
 pub fn power_action(action: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
@@ -831,7 +839,10 @@ mod user {
     use windows::Win32::NetworkManagement::NetManagement::{NetApiBufferFree, NetUserGetInfo, USER_INFO_2};
     use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+        KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn wide(s: &str) -> Vec<u16> {
@@ -867,6 +878,23 @@ mod user {
             let out = s.to_string().ok();
             let _ = LocalFree(Some(HLOCAL(s.0 as _)));
             out
+        }
+    }
+
+    /// Regrava `HKCU\...\Run\<name>` como `"<exe>"`, só se o valor já existir
+    /// (quem desligou o autostart não deve vê-lo voltar).
+    pub fn quote_run_value(name: &str, exe: &str) {
+        let (k, v) = (wide(r"Software\Microsoft\Windows\CurrentVersion\Run"), wide(name));
+        let data: Vec<u8> = wide(&format!("\"{exe}\"")).iter().flat_map(|c| c.to_le_bytes()).collect();
+        unsafe {
+            let mut key = HKEY::default();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(k.as_ptr()), None, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut key).is_err() {
+                return;
+            }
+            if RegQueryValueExW(key, PCWSTR(v.as_ptr()), None, None, None, None).is_ok() {
+                let _ = RegSetValueExW(key, PCWSTR(v.as_ptr()), None, REG_SZ, Some(&data));
+            }
+            let _ = RegCloseKey(key);
         }
     }
 

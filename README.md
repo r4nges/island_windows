@@ -54,7 +54,7 @@ Sem a chave, compile com `npx tauri build --config '{\"bundle\":{\"createUpdater
 ## Publicar uma versão
 
 1. Suba a versão em `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json` e `src-tauri/msix/AppxManifest.xml` (`X.Y.Z.0`).
-2. Faça o commit e crie a tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+2. Faça o commit e crie a tag: `git tag -a vX.Y.Z -m "notas da versão" && git push origin main vX.Y.Z`. A primeira linha das notas aparece no aviso de atualização do Island.
 3. O CI compila, assina e cria o Release com o instalador, o `.sig` e o `latest.json`. Os Islands instalados encontram a versão nova em até 6 horas, ou na hora pelo menu da bandeja.
 
 A chave privada fica em `~\.tauri\island.key` (com a senha em `island.key.password`) e nos secrets `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` do repositório. **Guarde uma cópia:** sem ela não dá para publicar atualizações que os Islands já instalados aceitem.

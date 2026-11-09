@@ -163,3 +163,5 @@ pub fn user_info() -> super::UserInfo {
 pub fn power_action(_action: &str) -> Result<(), String> {
     Ok(())
 }
+
+pub fn autostart_quote_path() {}

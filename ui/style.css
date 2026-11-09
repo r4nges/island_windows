@@ -510,6 +510,9 @@ circle { fill: none; stroke-linecap: round; }
 .key-x { width: 20px; height: 20px; border-radius: 50%; color: var(--dim); font-size: 14px; line-height: 20px; text-align: center; }
 .key-x:hover { background: rgba(255,255,255,.1); color: var(--txt); }
 .s-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; padding: 0 2px 0 10px; font-size: 11.5px; color: var(--dim); }
+.s-foot .s-new { color: #30d158; font-weight: 600; }
+.s-foot .pillbtn.upd { background: var(--green); color: #00190a; }
+.s-foot .pillbtn.upd:disabled { opacity: .6; cursor: default; }
 
 /* relógio + calendário */
 .c-top { display: flex; align-items: center; gap: 20px; margin-bottom: 12px; }
