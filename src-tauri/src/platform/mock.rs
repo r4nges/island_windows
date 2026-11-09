@@ -100,7 +100,7 @@ impl Brightness {
 pub struct BrightnessWatch;
 
 impl BrightnessWatch {
-    pub fn next(&self) -> Option<u8> {
+    pub fn next(&mut self) -> Option<u8> {
         None
     }
 }

@@ -146,7 +146,7 @@ Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configur
 - **Economia de energia** não tem API pública para ligar/desligar; o botão abre a página do Windows. O modo de energia só tem efeito com o plano Equilibrado ativo.
 - **VRAM por processo** não é informada pelo driver NVIDIA no Windows (modo WDDM), por isso aparece “—”.
 - GPU só NVIDIA (via NVML); sem placa NVIDIA o card mostra “—”.
-- **Brilho** só funciona na tela interna de notebook (a leitura é feita pelo WMI): monitores externos e desktops não mostram o HUD de brilho.
+- **Brilho** só funciona na tela interna de notebook (a tela interna é detectada pelo WMI; as mudanças chegam pelo aviso de energia do Windows e pelo evento do WMI, o que vier primeiro): monitores externos e desktops não mostram o HUD de brilho.
 - **Aviso de brilho do Windows**: continua aparecendo junto do HUD de brilho da ilha (só o aviso de volume é escondido).
 - **Aviso de volume do Windows**: o Island o esconde enquanto mostra o próprio HUD de volume, mas isso depende de detalhes internos e não documentados do shell do Windows (testado no Windows 11 build 26300). Uma atualização do Windows pode quebrar o truque; nesse caso o aviso nativo simplesmente volta a aparecer junto do HUD. Também pode piscar por um quadro antes de sumir. Dá para desligar em Configurações → Esconder o aviso de volume do Windows.
 

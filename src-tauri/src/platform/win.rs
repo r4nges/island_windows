@@ -450,12 +450,54 @@ impl Fast {
     }
 }
 
-// ----------------------------------------------------- Brilho da tela (WMI)
+// ------------------------------------------- Brilho da tela (energia + WMI)
 
-/// Brilho da tela interna via WMI (`root\WMI`).
-/// `read()` consulta `WmiMonitorBrightness` (só para saber se há tela interna e
-/// o valor inicial); `watch()` assina `WmiMonitorBrightnessEvent`, evento que o
-/// driver dispara quando o brilho muda: zero custo parado, sem polling.
+use std::sync::mpsc;
+use windows::Win32::System::Power::{
+    PowerSettingRegisterNotification, PowerSettingUnregisterNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+    HPOWERNOTIFY, POWERBROADCAST_SETTING,
+};
+use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_POWERSETTINGCHANGE};
+// HANDLE, GUID e null_mut vêm do `use` da seção Wi-Fi
+
+/// `GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS`: aviso de energia com o brilho atual
+/// da tela (DWORD, 0..100). Definido aqui para não puxar a feature
+/// `Win32_System_SystemServices` inteira por uma constante.
+const GUID_BRILHO_ATUAL: GUID = GUID::from_u128(0x8ffee2c6_2d01_46be_adb9_398addc5b4ff);
+
+/// Por quanto tempo, depois de um aviso aceito, o que vier da outra fonte ainda
+/// é tratado como eco da mesma mudança. O eco mais lento medido levou ~180 ms.
+const ECO_BRILHO: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FonteBrilho {
+    Energia,
+    Wmi,
+}
+
+/// Destino dos avisos de energia. O callback roda numa thread do sistema; o
+/// canal fica num static (e não no ponteiro de contexto) para que um aviso em
+/// voo enquanto a assinatura é desfeita nunca toque memória já liberada. Só
+/// existe uma thread de brilho, então um destino basta.
+static BRILHO_TX: Mutex<Option<mpsc::Sender<(FonteBrilho, u8)>>> = Mutex::new(None);
+
+unsafe extern "system" fn brilho_energia_cb(_ctx: *const core::ffi::c_void, kind: u32, setting: *const core::ffi::c_void) -> u32 {
+    if kind == PBT_POWERSETTINGCHANGE && !setting.is_null() {
+        let s = setting as *const POWERBROADCAST_SETTING;
+        if (*s).PowerSetting == GUID_BRILHO_ATUAL && (*s).DataLength >= 4 {
+            let v = (std::ptr::addr_of!((*s).Data) as *const u32).read_unaligned().min(100) as u8;
+            if let Some(tx) = BRILHO_TX.lock().ok().as_deref().and_then(Option::as_ref) {
+                let _ = tx.send((FonteBrilho::Energia, v));
+            }
+        }
+    }
+    0 // ERROR_SUCCESS
+}
+
+/// Brilho da tela interna.
+/// `read()` consulta `WmiMonitorBrightness` do WMI (`root\WMI`): só serve para
+/// saber se há tela interna e pegar o valor inicial. As mudanças chegam por
+/// evento (`watch()`): zero custo parado, sem polling.
 /// Precisa de COM iniciado na thread (`init_thread`) e deve ficar nela.
 pub struct Brightness {
     svc: IWbemServices,
@@ -527,42 +569,143 @@ impl Brightness {
         }
     }
 
-    /// Assina as mudanças de brilho. `None` se o WMI recusar a consulta.
-    pub fn watch(&self) -> Option<BrightnessWatch> {
+    /// Fila do `WmiMonitorBrightnessEvent`. `None` se o WMI recusar a consulta.
+    fn wmi_events(&self) -> Option<IEnumWbemClassObject> {
         unsafe {
-            let en = self
-                .svc
+            self.svc
                 .ExecNotificationQuery(
                     &BSTR::from("WQL"),
                     &BSTR::from("SELECT * FROM WmiMonitorBrightnessEvent WHERE Active = TRUE"),
                     WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
                     None,
                 )
-                .ok()?;
-            Some(BrightnessWatch { en })
+                .ok()
+        }
+    }
+
+    /// Assina as mudanças de brilho por duas fontes, porque cada uma chega
+    /// primeiro num caminho diferente (medido no notebook de desenvolvimento):
+    /// - aviso de energia `GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS`: chega 1-25 ms
+    ///   depois de mexer no slider do Windows, enquanto o evento do WMI leva
+    ///   50-180 ms nesse caminho (era o atraso do HUD);
+    /// - `WmiMonitorBrightnessEvent`: chega em 2-5 ms quando um app muda o brilho
+    ///   por `WmiSetBrightness`, e aí o aviso de energia vem 20-115 ms depois.
+    ///
+    /// O que chegar primeiro vale e o eco da outra fonte é descartado em
+    /// `next()`. O aviso de energia vem por callback do sistema (sem janela);
+    /// o WMI bloqueia numa thread própria. `None` se nenhuma das duas assinar.
+    pub fn watch(&self) -> Option<BrightnessWatch> {
+        let (tx, rx) = mpsc::channel();
+
+        // aviso de energia: o sistema manda o valor atual logo ao assinar, que
+        // não é mudança e é descartado aqui (antes de o WMI poder mandar algo)
+        if let Ok(mut g) = BRILHO_TX.lock() {
+            *g = Some(tx.clone());
+        }
+        let mut params = Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS { Callback: Some(brilho_energia_cb), Context: null_mut() });
+        let mut h = null_mut();
+        let ok = unsafe {
+            PowerSettingRegisterNotification(
+                &GUID_BRILHO_ATUAL,
+                DEVICE_NOTIFY_CALLBACK,
+                HANDLE(&mut *params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as *mut core::ffi::c_void),
+                &mut h,
+            )
+        }
+        .is_ok();
+        let energia = if ok {
+            let _ = rx.recv_timeout(Duration::from_millis(500));
+            Some((HPOWERNOTIFY(h as isize), params))
+        } else {
+            if let Ok(mut g) = BRILHO_TX.lock() {
+                *g = None;
+            }
+            None
+        };
+
+        // WMI: a interface COM não muda de thread, então a thread abre a própria
+        // conexão e avisa se a assinatura pegou. Quando a fila de `next()` some,
+        // o próximo envio falha e a thread termina.
+        let (pronto_tx, pronto_rx) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("brightness-wmi".into())
+            .spawn(move || {
+                init_thread();
+                let Some(en) = Brightness::new().and_then(|b| b.wmi_events()) else {
+                    let _ = pronto_tx.send(false);
+                    return;
+                };
+                let _ = pronto_tx.send(true);
+                while let Some(v) = wmi_next(&en) {
+                    if tx.send((FonteBrilho::Wmi, v)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .is_ok();
+        let wmi = spawned && pronto_rx.recv().unwrap_or(false);
+
+        if energia.is_none() && !wmi {
+            return None;
+        }
+        Some(BrightnessWatch { rx, energia, lider: None })
+    }
+}
+
+/// Bloqueia até o próximo `WmiMonitorBrightnessEvent` (0..100). `None` se a
+/// assinatura quebrou (WMI reiniciou, erro de RPC).
+fn wmi_next(en: &IEnumWbemClassObject) -> Option<u8> {
+    unsafe {
+        let mut objs = [None];
+        let mut got = 0u32;
+        let hr = en.Next(WBEM_INFINITE, &mut objs, &mut got);
+        if hr.is_err() || got == 0 {
+            return None;
+        }
+        let obj = objs[0].take()?;
+        wmi_percent(&obj, windows::core::w!("Brightness"))
+    }
+}
+
+/// Mudanças de brilho das duas fontes (ver `Brightness::watch`).
+pub struct BrightnessWatch {
+    rx: mpsc::Receiver<(FonteBrilho, u8)>,
+    /// assinatura do aviso de energia; os parâmetros ficam vivos até desfazê-la
+    energia: Option<(HPOWERNOTIFY, Box<DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS>)>,
+    /// última fonte aceita e quando: a outra fonte, dentro de `ECO_BRILHO`, é eco
+    lider: Option<(FonteBrilho, Instant)>,
+}
+
+impl BrightnessWatch {
+    /// Bloqueia até o próximo aviso e devolve o brilho novo (0..100).
+    /// Descarta o eco: a mesma mudança chega pelas duas fontes, com até ~180 ms
+    /// de diferença, e o valor do WMI pode nem bater com o da energia (telas com
+    /// poucos níveis), então o eco é reconhecido pela fonte e pelo tempo.
+    /// `None` se as duas fontes morreram; quem chama deve recomeçar do zero,
+    /// com espera, e nunca girar em volta disto.
+    pub fn next(&mut self) -> Option<u8> {
+        loop {
+            let (fonte, v) = self.rx.recv().ok()?;
+            if let Some((outra, t)) = self.lider {
+                if outra != fonte && t.elapsed() < ECO_BRILHO {
+                    continue;
+                }
+            }
+            self.lider = Some((fonte, Instant::now()));
+            return Some(v);
         }
     }
 }
 
-/// Fila de eventos de brilho (ver `Brightness::watch`).
-pub struct BrightnessWatch {
-    en: IEnumWbemClassObject,
-}
-
-impl BrightnessWatch {
-    /// Bloqueia até o próximo evento e devolve o brilho novo (0..100).
-    /// `None` se a assinatura quebrou (WMI reiniciou, erro de RPC); quem chama
-    /// deve recomeçar do zero, com espera, e nunca girar em volta disto.
-    pub fn next(&self) -> Option<u8> {
-        unsafe {
-            let mut objs = [None];
-            let mut got = 0u32;
-            let hr = self.en.Next(WBEM_INFINITE, &mut objs, &mut got);
-            if hr.is_err() || got == 0 {
-                return None;
+impl Drop for BrightnessWatch {
+    fn drop(&mut self) {
+        if let Some((h, _params)) = self.energia.take() {
+            unsafe {
+                let _ = PowerSettingUnregisterNotification(h);
             }
-            let obj = objs[0].take()?;
-            wmi_percent(&obj, windows::core::w!("Brightness"))
+            if let Ok(mut g) = BRILHO_TX.lock() {
+                *g = None;
+            }
         }
     }
 }

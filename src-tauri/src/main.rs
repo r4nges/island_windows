@@ -580,22 +580,25 @@ fn spawn_slow(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
-/// Brilho da tela interna: assina o evento do WMI (zero custo parado) e emite
-/// só quando muda, nunca na leitura inicial. Quem liga/desliga o aviso é o
-/// frontend (`modules.brightness`). Sem tela interna, ou se a primeira leitura
-/// falha (driver ainda não pronto, tampa fechada no login) ou a assinatura
-/// quebra, tenta de novo a cada 60 s, sem nunca girar em loop rápido.
+/// Brilho da tela interna: assina o aviso de energia e o evento do WMI (zero
+/// custo parado, o que chegar primeiro vale) e emite só quando muda, nunca na
+/// leitura inicial. Quem liga/desliga o aviso é o frontend (`modules.brightness`).
+/// Sem tela interna, ou se a primeira leitura falha (driver ainda não pronto,
+/// tampa fechada no login) ou as duas assinaturas quebram, tenta de novo a cada
+/// 60 s, sem nunca girar em loop rápido.
 fn spawn_brightness(app: AppHandle) {
     thread::spawn(move || {
         platform::init_thread();
         loop {
-            if let Some(br) = platform::Brightness::new() {
-                if let (Some(mut last), Some(watch)) = (br.read(), br.watch()) {
-                    while let Some(now) = watch.next() {
-                        if now != last {
-                            last = now;
-                            let _ = app.emit("island:brightness", now);
-                        }
+            // `watch()` só depois de `read()` confirmar a tela interna: no desktop
+            // não assina nada nem sobe a thread do WMI a cada nova tentativa
+            if let Some((mut last, mut watch)) =
+                platform::Brightness::new().and_then(|br| Some((br.read()?, br.watch()?)))
+            {
+                while let Some(now) = watch.next() {
+                    if now != last {
+                        last = now;
+                        let _ = app.emit("island:brightness", now);
                     }
                 }
             }
