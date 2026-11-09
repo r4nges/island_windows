@@ -24,7 +24,8 @@ use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4, VT_UI1};
 use windows::Win32::System::Wmi::{
-    IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
+    IEnumWbemClassObject, IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY,
+    WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::Shell::{
@@ -339,11 +340,33 @@ impl Fast {
 
 // ----------------------------------------------------- Brilho da tela (WMI)
 
-/// Brilho da tela interna via WMI (`root\WMI` → `WmiMonitorBrightness`).
-/// A conexão abre uma vez; a consulta roda a cada leitura porque o valor muda.
+/// Brilho da tela interna via WMI (`root\WMI`).
+/// `read()` consulta `WmiMonitorBrightness` (só para saber se há tela interna e
+/// o valor inicial); `watch()` assina `WmiMonitorBrightnessEvent`, evento que o
+/// driver dispara quando o brilho muda: zero custo parado, sem polling.
 /// Precisa de COM iniciado na thread (`init_thread`) e deve ficar nela.
 pub struct Brightness {
     svc: IWbemServices,
+}
+
+/// Lê uma propriedade numérica (VT_UI1 ou VT_I4) de um objeto WMI, 0..100.
+/// Sempre limpa o VARIANT.
+unsafe fn wmi_percent(obj: &IWbemClassObject, name: windows::core::PCWSTR) -> Option<u8> {
+    let mut v = VARIANT::default();
+    if obj.Get(name, 0, &mut v, None, None).is_err() {
+        let _ = VariantClear(&mut v);
+        return None;
+    }
+    let vt = v.Anonymous.Anonymous.vt;
+    let out = if vt == VT_UI1 {
+        Some(v.Anonymous.Anonymous.Anonymous.bVal)
+    } else if vt == VT_I4 {
+        Some(v.Anonymous.Anonymous.Anonymous.lVal.clamp(0, 100) as u8)
+    } else {
+        None
+    };
+    let _ = VariantClear(&mut v);
+    out.map(|b| b.min(100))
 }
 
 impl Brightness {
@@ -376,7 +399,7 @@ impl Brightness {
                 .svc
                 .ExecQuery(
                     &BSTR::from("WQL"),
-                    &BSTR::from("SELECT CurrentBrightness FROM WmiMonitorBrightness"),
+                    &BSTR::from("SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active = TRUE"),
                     WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
                     None,
                 )
@@ -388,18 +411,46 @@ impl Brightness {
                 return None;
             }
             let obj = objs[0].take()?;
-            let mut v = VARIANT::default();
-            obj.Get(windows::core::w!("CurrentBrightness"), 0, &mut v, None, None).ok()?;
-            let vt = v.Anonymous.Anonymous.vt;
-            let out = if vt == VT_UI1 {
-                Some(v.Anonymous.Anonymous.Anonymous.bVal)
-            } else if vt == VT_I4 {
-                Some(v.Anonymous.Anonymous.Anonymous.lVal.clamp(0, 100) as u8)
-            } else {
-                None
-            };
-            let _ = VariantClear(&mut v);
-            out.map(|b| b.min(100))
+            wmi_percent(&obj, windows::core::w!("CurrentBrightness"))
+        }
+    }
+
+    /// Assina as mudanças de brilho. `None` se o WMI recusar a consulta.
+    pub fn watch(&self) -> Option<BrightnessWatch> {
+        unsafe {
+            let en = self
+                .svc
+                .ExecNotificationQuery(
+                    &BSTR::from("WQL"),
+                    &BSTR::from("SELECT * FROM WmiMonitorBrightnessEvent WHERE Active = TRUE"),
+                    WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                    None,
+                )
+                .ok()?;
+            Some(BrightnessWatch { en })
+        }
+    }
+}
+
+/// Fila de eventos de brilho (ver `Brightness::watch`).
+pub struct BrightnessWatch {
+    en: IEnumWbemClassObject,
+}
+
+impl BrightnessWatch {
+    /// Bloqueia até o próximo evento e devolve o brilho novo (0..100).
+    /// `None` se a assinatura quebrou (WMI reiniciou, erro de RPC); quem chama
+    /// deve recomeçar do zero, com espera, e nunca girar em volta disto.
+    pub fn next(&self) -> Option<u8> {
+        unsafe {
+            let mut objs = [None];
+            let mut got = 0u32;
+            let hr = self.en.Next(WBEM_INFINITE, &mut objs, &mut got);
+            if hr.is_err() || got == 0 {
+                return None;
+            }
+            let obj = objs[0].take()?;
+            wmi_percent(&obj, windows::core::w!("Brightness"))
         }
     }
 }

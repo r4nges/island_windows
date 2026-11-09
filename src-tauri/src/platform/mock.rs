@@ -83,6 +83,17 @@ impl Brightness {
     pub fn read(&self) -> Option<u8> {
         None
     }
+    pub fn watch(&self) -> Option<BrightnessWatch> {
+        None
+    }
+}
+
+pub struct BrightnessWatch;
+
+impl BrightnessWatch {
+    pub fn next(&self) -> Option<u8> {
+        None
+    }
 }
 
 pub fn battery() -> Option<Battery> {
