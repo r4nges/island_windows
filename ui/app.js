@@ -102,6 +102,7 @@
     pinned: false, // aberta pela bandeja/atalho: fica expandida até o mouse entrar e sair
     fullscreen: false, // app cobrindo a ilha: tela cheia ou janela maximizada por baixo (com "esconder" a janela some; com "traço" vira peek)
     user: null, // { name, login, picture } do painel do usuário
+    sysAccent: null, // cor de destaque do Windows ("#rrggbb") para a aura "Sistema"; null até o Rust responder
   };
 
   // padrão igual ao settings.rs; só vale até o Rust responder (e no modo demo)
@@ -491,7 +492,10 @@
     const c = `rgb(${S.color.join(",")})`;
     const a = cfg().aura;
     stage.style.setProperty("--accent", c);
-    stage.style.setProperty("--glow", a.color !== "auto" ? a.color : S.media && S.art ? c : AURA_FALLBACK);
+    const glow = a.color === "auto" ? (S.media && S.art ? c : AURA_FALLBACK)
+      : a.color === "system" ? S.sysAccent || AURA_FALLBACK // sem leitura ainda (ou falhou): a mesma cor de quando não há capa
+      : a.color;
+    stage.style.setProperty("--glow", glow);
     stage.style.setProperty("--aura-op", AURA_OPACITY[a.intensity] ?? 0.32);
   }
   function dominant(img) {
@@ -1180,7 +1184,10 @@
   const AURA_LEVELS = [["off", "Desligada"], ["subtle", "Sutil"], ["medium", "Média"]];
   const SCALE_OPTS = [[0.9, "90%"], [1.0, "100%"], [1.1, "110%"]];
   const FS_OPTS = [["hide", "Esconder a ilha"], ["peek", "Deixar um traço"]];
-  const SWATCHES = ["auto", "#ffffff", "#0a84ff", "#bf5af2", "#ff375f", "#ff9f0a", "#30d158"];
+  const SWATCHES = ["auto", "system", "#ffffff", "#0a84ff", "#bf5af2", "#ff375f", "#ff9f0a", "#30d158"];
+  // cores que não são um #rrggbb fixo: classe CSS própria e dica no lugar do código
+  const SWATCH_TITLES = { auto: "Automática (cor da capa)", system: "Sistema (cor de destaque do Windows)" };
+  const swatchStyle = (s) => (s === "auto" ? "" : s === "system" ? (S.sysAccent ? `--c:${S.sysAccent}` : "") : `--c:${s}`);
   const MODULE_LABELS = [
     ["volume", "Volume"], ["brightness", "Brilho"], ["caps", "Caps Lock"], ["battery", "Bateria e carregador"], ["network", "Internet caiu/voltou"],
     ["track", "Nova música"], ["clipboard", "Texto copiado"], ["notifications", "Notificações"], ["pomo_sound", "Som do pomodoro"],
@@ -1294,14 +1301,14 @@
 
   function renderSettings() {
     const c = cfg(), a = c.aura;
-    const custom = a.color !== "auto" && !SWATCHES.includes(a.color);
+    const custom = !SWATCHES.includes(a.color);
     $(".js-settings").innerHTML = `
       <div class="sec">Aura</div>
       ${seg("aura.intensity", AURA_LEVELS, a.intensity)}
       ${toggle("aura.expanded", "Aura com a ilha aberta", a.expanded)}
       <div class="s-label">Cor</div>
       <div class="swatches">${SWATCHES.map((s) =>
-        `<button class="swatch ${s === "auto" ? "auto" : ""} ${a.color === s ? "on" : ""}" data-color="${s}" title="${s === "auto" ? "Automática (cor da capa)" : s}" style="${s === "auto" ? "" : `--c:${s}`}"></button>`).join("")}
+        `<button class="swatch ${SWATCH_TITLES[s] ? s : ""} ${a.color === s ? "on" : ""}" data-color="${s}" title="${SWATCH_TITLES[s] || s}" style="${swatchStyle(s)}"></button>`).join("")}
         <button class="swatch custom ${custom ? "on" : ""}" data-color="custom" title="Personalizada" style="${custom ? `--c:${a.color}` : ""}"></button>
       </div>
       <input type="range" class="hue js-hue" min="0" max="359" value="${custom ? hexHue(a.color) : 210}" ${custom ? "" : "hidden"}>
@@ -1382,6 +1389,17 @@
   listen("island:open-settings", () => pinOpen("settings"));
   invoke("get_settings").then((c) => { if (c) { S.cfg = c; applyAccent(); render(); } }).catch(() => {});
 
+  // cor de destaque do Windows: valor inicial + trocas feitas nas Configurações do Windows
+  function onSysAccent(hex) {
+    if (!hex || hex === S.sysAccent) return;
+    S.sysAccent = hex;
+    applyAccent();
+    // só o swatch: re-render do painel no meio de um clique/gravação de atalho atrapalharia
+    $(".js-settings .swatch.system")?.style.setProperty("--c", hex);
+  }
+  listen("island:accent", onSysAccent);
+  invoke("accent_color").then(onSysAccent).catch(() => {});
+
   // ------------------------------------------------------------ inicialização
   applyGeometry(...SIZES.idle);
   refreshExpanded();
@@ -1414,6 +1432,7 @@
     if (cmd === "set_hud_blocked") return null;
     if (cmd === "list_monitors")
       return sleep(120, [{ id: "\\\\.\\DISPLAY1", width: 1920, height: 1080, primary: true }, { id: "\\\\.\\DISPLAY2", width: 2560, height: 1440, primary: false }]);
+    if (cmd === "accent_color") return "#0078d4"; // azul padrão do Windows
     if (cmd === "get_settings") return load("island.demo.cfg", null) || DEFAULT_CFG;
     if (cmd === "set_settings") { save("island.demo.cfg", args.settings); document.body.style.zoom = args.settings.scale; return args.settings; }
     if (cmd === "pending_update") return new URLSearchParams(location.search).has("update") ? { version: "0.4.1", current: "0.4.0", notes: null } : null;

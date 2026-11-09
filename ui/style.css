@@ -481,6 +481,15 @@ circle { fill: none; stroke-linecap: round; }
 .swatch.on { box-shadow: 0 0 0 2px #000, 0 0 0 4px #fff; }
 /* automática = cor da capa: um disco multicolorido */
 .swatch.auto { background: conic-gradient(#ff375f, #ff9f0a, #ffd60a, #30d158, #0a84ff, #bf5af2, #ff375f); }
+/* sistema = cor de destaque do Windows (--c vem do Rust): o logo de 4 quadrados
+   por cima diz que a cor é a do sistema, não uma fixa igual às do lado */
+.swatch.system::after {
+  content: ""; display: block; width: 8px; height: 8px; margin: 7px;
+  --q: linear-gradient(rgba(255,255,255,.92), rgba(255,255,255,.92));
+  background: var(--q) 0 0 / 3.5px 3.5px no-repeat, var(--q) 100% 0 / 3.5px 3.5px no-repeat,
+    var(--q) 0 100% / 3.5px 3.5px no-repeat, var(--q) 100% 100% / 3.5px 3.5px no-repeat;
+  filter: drop-shadow(0 0 1px rgba(0,0,0,.45));
+}
 .swatch.custom:not([style*="--c"]) { background: rgba(255,255,255,.08); }
 .swatch.custom::after { content: "+"; display: grid; place-items: center; height: 100%; font-size: 14px; color: rgba(255,255,255,.75); }
 .swatch.custom[style*="--c"]::after { content: ""; }

@@ -46,7 +46,7 @@ pub struct Aura {
     pub intensity: String,
     /// aura também com a ilha expandida, mesmo sem mídia
     pub expanded: bool,
-    /// "auto" (cor da capa) ou "#rrggbb"
+    /// "auto" (cor da capa), "system" (cor de destaque do Windows) ou "#rrggbb"
     pub color: String,
 }
 
@@ -124,7 +124,7 @@ impl Settings {
         }
         let c = &self.aura.color;
         let hex_ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
-        if c != "auto" && !hex_ok {
+        if c != "auto" && c != "system" && !hex_ok {
             self.aura.color = "auto".into();
         }
         for s in [&mut self.shortcuts.open, &mut self.shortcuts.play, &mut self.shortcuts.pomo] {
@@ -161,4 +161,32 @@ pub fn save(file: &Path, s: &Settings) -> std::io::Result<()> {
     let txt = serde_json::to_string_pretty(s).map_err(std::io::Error::other)?;
     std::fs::write(&tmp, txt)?;
     std::fs::rename(&tmp, file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    fn color_after_sanitize(c: &str) -> String {
+        let mut s = Settings::default();
+        s.aura.color = c.into();
+        s.sanitize();
+        s.aura.color
+    }
+
+    #[test]
+    fn aura_color_valida() {
+        assert_eq!(color_after_sanitize("auto"), "auto");
+        assert_eq!(color_after_sanitize("system"), "system");
+        assert_eq!(color_after_sanitize("#a94dc1"), "#a94dc1");
+        // valor desconhecido (versão futura, arquivo editado à mão) volta para a capa
+        assert_eq!(color_after_sanitize("System"), "auto");
+        assert_eq!(color_after_sanitize("#12345"), "auto");
+    }
+
+    #[test]
+    fn config_antiga_sem_cor_continua_auto() {
+        let s: Settings = serde_json::from_str(r#"{"aura":{"intensity":"medium"}}"#).unwrap();
+        assert_eq!(s.aura.color, "auto");
+    }
 }

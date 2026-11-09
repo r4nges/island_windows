@@ -567,6 +567,79 @@ impl BrightnessWatch {
     }
 }
 
+// ------------------------------------------------- Cor de destaque (UISettings)
+
+use windows::Foundation::TypedEventHandler;
+use windows::UI::ViewManagement::{UIColorType, UISettings};
+
+/// Cor de destaque do Windows: `UISettings.GetColorValue(Accent)`, a mesma
+/// `SystemAccentColor` que os apps WinUI usam. Não é o `DWM\AccentColor` do
+/// registro: lá fica a cor escolhida, e o Windows deriva dela uma paleta em
+/// que o destaque pode ser outro tom (escolhida #680081, destaque #a94dc1).
+/// O UISettings também não relê o registro sozinho (guarda a cor até o
+/// Windows avisar), então ler o registro ao lado dele daria cores trocadas.
+/// `watch()` assina `ColorValuesChanged`, que o Windows dispara numa thread
+/// dele quando a cor (ou o tema) muda: zero custo parado, sem polling.
+pub struct Accent {
+    ui: UISettings,
+}
+
+fn accent_hex(ui: &UISettings) -> Option<String> {
+    let c = ui.GetColorValue(UIColorType::Accent).ok()?;
+    Some(format!("#{:02x}{:02x}{:02x}", c.R, c.G, c.B))
+}
+
+impl Accent {
+    pub fn new() -> Option<Self> {
+        UISettings::new().ok().map(|ui| Self { ui })
+    }
+
+    /// "#rrggbb"
+    pub fn read(&self) -> Option<String> {
+        accent_hex(&self.ui)
+    }
+
+    /// Assina as mudanças. O evento só chega enquanto o `AccentWatch` (e o
+    /// UISettings dentro dele) estiver vivo.
+    pub fn watch(&self) -> Option<AccentWatch> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handler = TypedEventHandler::new(move |_, _| {
+            let _ = tx.send(());
+            Ok(())
+        });
+        let token = self.ui.ColorValuesChanged(&handler).ok()?;
+        Some(AccentWatch { ui: self.ui.clone(), token, rx })
+    }
+}
+
+/// Fila de mudanças da cor de destaque (ver `Accent::watch`).
+pub struct AccentWatch {
+    ui: UISettings,
+    token: i64,
+    rx: std::sync::mpsc::Receiver<()>,
+}
+
+impl AccentWatch {
+    /// Bloqueia até a próxima mudança e devolve a cor ("#rrggbb"), que pode
+    /// ser a mesma: o evento também vem por tema claro/escuro e alto contraste,
+    /// e uma troca de cor chega em rajada (avisos repetidos são descartados).
+    pub fn next(&self) -> Option<String> {
+        loop {
+            self.rx.recv().ok()?;
+            while self.rx.try_recv().is_ok() {}
+            if let Some(c) = accent_hex(&self.ui) {
+                return Some(c);
+            }
+        }
+    }
+}
+
+impl Drop for AccentWatch {
+    fn drop(&mut self) {
+        let _ = self.ui.RemoveColorValuesChanged(self.token);
+    }
+}
+
 // ------------------------------------------------- Leituras lentas (~1 Hz)
 
 pub fn battery() -> Option<Battery> {

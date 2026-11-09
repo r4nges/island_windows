@@ -105,6 +105,29 @@ impl BrightnessWatch {
     }
 }
 
+/// Cor de destaque fixa: o azul padrão do Windows, que nunca muda no mock.
+pub struct Accent;
+
+impl Accent {
+    pub fn new() -> Option<Self> {
+        Some(Accent)
+    }
+    pub fn read(&self) -> Option<String> {
+        Some("#0078d4".into())
+    }
+    pub fn watch(&self) -> Option<AccentWatch> {
+        None
+    }
+}
+
+pub struct AccentWatch;
+
+impl AccentWatch {
+    pub fn next(&self) -> Option<String> {
+        None
+    }
+}
+
 pub fn battery() -> Option<Battery> {
     Some(Battery { percent: 78, charging: false })
 }

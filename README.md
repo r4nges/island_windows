@@ -28,7 +28,7 @@ Dynamic Island para Windows 11: uma pílula preta no topo da tela que se transfo
 
 ### Configurações
 
-- **Aura**: intensidade (Desligada, Sutil ou Média), se aparece com a ilha aberta e a cor: automática (a cor da capa do álbum), predefinidas ou um seletor de matiz.
+- **Aura**: intensidade (Desligada, Sutil ou Média), se aparece com a ilha aberta e a cor: automática (a cor da capa do álbum), **Sistema** (a cor de destaque do Windows, que acompanha na hora quando você a troca nas Configurações do Windows), predefinidas ou um seletor de matiz.
 - **Tamanho da ilha**: 90%, 100% ou 110%.
 - **App por baixo da ilha**: quando há um app em tela cheia ou uma janela maximizada por baixo da ilha (por exemplo, as abas do navegador), a ilha some e fica invisível, mas dá para puxá-la deixando o mouse parado na borda de cima da tela. Se preferir, escolha **Deixar um traço** no lugar.
 - **Monitor**: em qual tela a ilha aparece.

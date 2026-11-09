@@ -52,6 +52,8 @@ struct Shared {
     osd_at: Mutex<Option<Instant>>,
     /// thread que esconde o aviso do Windows (dorme até `wake_osd`)
     osd_thread: OnceLock<thread::Thread>,
+    /// cor de destaque do Windows ("#rrggbb"), para a aura "Sistema" (o `spawn_accent` atualiza)
+    accent: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -211,6 +213,14 @@ async fn user_info() -> Result<platform::UserInfo, String> {
 #[tauri::command]
 async fn power_action(action: String) -> Result<(), String> {
     blocking(move || platform::power_action(&action)).await?
+}
+
+/// Cor de destaque do Windows para a aura "Sistema"; as trocas chegam depois
+/// por `island:accent`. Se a página pedir antes da thread ler, lê aqui mesmo.
+#[tauri::command]
+fn accent_color(shared: tauri::State<'_, Arc<Shared>>) -> Option<String> {
+    let cur = shared.accent.lock().unwrap().clone();
+    cur.or_else(|| platform::Accent::new()?.read())
 }
 
 #[tauri::command]
@@ -594,6 +604,29 @@ fn spawn_brightness(app: AppHandle) {
     });
 }
 
+/// Cor de destaque do Windows (aura "Sistema"): assina o `ColorValuesChanged`
+/// antes da leitura inicial, para não perder uma troca no meio, e depois só
+/// acorda quando o Windows avisa. Emite `island:accent` só se a cor mudou de
+/// verdade (o aviso também vem por tema claro/escuro). Sem assinatura, fica a
+/// leitura inicial, que o comando `accent_color` entrega.
+fn spawn_accent(app: AppHandle, shared: Arc<Shared>) {
+    thread::spawn(move || {
+        platform::init_thread();
+        let Some(acc) = platform::Accent::new() else { return };
+        let watch = acc.watch();
+        *shared.accent.lock().unwrap() = acc.read();
+        let Some(watch) = watch else { return };
+        while let Some(now) = watch.next() {
+            let mut cur = shared.accent.lock().unwrap();
+            if cur.as_deref() != Some(now.as_str()) {
+                *cur = Some(now.clone());
+                drop(cur);
+                let _ = app.emit("island:accent", now);
+            }
+        }
+    });
+}
+
 /// Notificações de outros apps (precisa de identidade de pacote).
 fn spawn_notifs(app: AppHandle) {
     thread::spawn(move || {
@@ -709,7 +742,7 @@ fn main() {
             set_hit_rect, set_hud_blocked, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
-            list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action
+            list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");
@@ -753,6 +786,7 @@ fn main() {
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());
             spawn_brightness(app.handle().clone());
+            spawn_accent(app.handle().clone(), shared.clone());
             update::spawn(app.handle().clone());
             Ok(())
         })
