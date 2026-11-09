@@ -1123,11 +1123,11 @@
     const st = S.nstatus;
     let setup = "";
     if (st === "noidentity")
-      setup = `<div class="notice"><b>Ativar notificações</b>O Windows só entrega as notificações de outros apps para programas com identidade de pacote. O Island registra essa identidade sozinho; para isso o <b style="display:inline">Modo de Desenvolvedor</b> precisa estar ligado.<br>
+      setup = `<div class="notice"><b>Ativar notificações</b>O Windows só entrega as notificações de outros apps para programas com identidade de pacote. O RAD registra essa identidade sozinho; para isso o <b style="display:inline">Modo de Desenvolvedor</b> precisa estar ligado.<br>
         <button class="pillbtn sm primary js-notif-enable">Ativar</button> <button class="pillbtn sm js-uri" data-uri="ms-settings:developers">Modo de Desenvolvedor ${I.ext}</button>
         <div class="js-notif-err" style="margin-top:8px;color:var(--red);font-size:11.5px"></div></div>`;
     else if (st && st !== "allowed")
-      setup = `<div class="notice"><b>Permita o acesso às notificações</b>Em Configurações → Privacidade → Notificações, ligue o acesso para o Island.<br><button class="pillbtn sm js-uri" data-uri="ms-settings:privacy-notifications">Abrir configurações ${I.ext}</button></div>`;
+      setup = `<div class="notice"><b>Permita o acesso às notificações</b>Em Configurações → Privacidade → Notificações, ligue o acesso para o RAD.<br><button class="pillbtn sm js-uri" data-uri="ms-settings:privacy-notifications">Abrir configurações ${I.ext}</button></div>`;
     else if (S.notifs.length)
       setup = `<div class="notif-head"><span class="sec" style="margin:0">Recentes</span><button class="chip js-notif-clear">Limpar</button></div>`;
     $(".js-notif-setup").innerHTML = setup;
@@ -1203,7 +1203,7 @@
     const right = !u
       ? `<button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button>`
       : `<button class="pillbtn sm primary upd js-install-upd"${p ? " disabled" : ""}>${p === "installing" ? "Instalando…" : p ? (p.pct != null ? `${p.pct}%` : "Baixando…") : `${I.upd} Instalar`}</button>`;
-    return `<span>Island ${esc(appVersion)}${u ? ` · <b class="s-new">v${esc(u.version)} disponível</b>` : ""}</span>${right}`;
+    return `<span>RAD ${esc(appVersion)}${u ? ` · <b class="s-new">v${esc(u.version)} disponível</b>` : ""}</span>${right}`;
   }
   function renderUpd() {
     const u = S.update;
@@ -1214,7 +1214,7 @@
     const p = u.progress;
     updBtn.classList.toggle("busy", !!p);
     updBtn.innerHTML = `${I.upd}<span>${p === "installing" ? "Instalando…" : p != null ? (p.pct != null ? `${p.pct}%` : "Baixando…") : `v${esc(u.version)}`}</span>`;
-    updBtn.title = p ? "Atualizando o Island" : `Instalar o Island v${u.version} e reiniciar`;
+    updBtn.title = p ? "Atualizando o RAD" : `Instalar o RAD v${u.version} e reiniciar`;
   }
   function onUpdate(u) {
     S.update = { ...u, progress: S.update?.progress ?? null };
@@ -1223,7 +1223,7 @@
     updToasted = u.version;
     // notas escritas à mão na tag viram o subtítulo; o "Novidades: <url>" automático não serve de resumo
     const note = (u.notes || "").trim().split(/\r?\n/)[0].trim();
-    const sub = note && !note.startsWith("Novidades:") ? note : `Island v${u.version} · passe o mouse para instalar`;
+    const sub = note && !note.startsWith("Novidades:") ? note : `RAD v${u.version} · passe o mouse para instalar`;
     hud("toast", 5000, { icon: I.upd, ...GREEN, title: "Atualização disponível", sub, acc: "" });
   }
   function onUpdateProgress(p) {
@@ -1248,7 +1248,7 @@
   listen("island:update", onUpdate);
   listen("island:update-progress", onUpdateProgress);
   listen("island:update-none", (v) =>
-    hud("toast", 2600, { icon: I.check, ...GREEN, title: "Island atualizado", sub: `Você já está na versão mais recente (v${v})`, acc: "" })
+    hud("toast", 2600, { icon: I.check, ...GREEN, title: "RAD atualizado", sub: `Você já está na versão mais recente (v${v})`, acc: "" })
   );
   // após "Recarregar visual" o aviso pendente continua valendo
   invoke("pending_update").then((u) => { if (u) { updToasted = u.version; onUpdate(u); } }).catch(() => {});
@@ -1399,7 +1399,7 @@
   function taskbarSection(c) {
     const t = { ...DEFAULT_CFG.taskbar, ...(c.taskbar || {}) };
     return `<div class="sec">Barra de tarefas</div>
-      ${toggle("taskbar.enabled", "Barra flutuante do Island", t.enabled)}
+      ${toggle("taskbar.enabled", "Barra flutuante do RAD", t.enabled)}
       <div class="s-label">Esconde a barra do Windows enquanto estiver ligada; ela volta ao desligar ou sair.</div>
       <div class="s-label">Vidro</div>
       ${seg("taskbar.glass", TB_GLASS, t.glass)}

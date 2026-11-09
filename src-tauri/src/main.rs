@@ -398,7 +398,7 @@ fn wave_done(app: AppHandle, shared: tauri::State<'_, Arc<Shared>>) {
 /// `show()`/`hide()` do Tauri, que a ativaria.
 fn build_wave_window(app: &tauri::App) -> tauri::Result<()> {
     let w = tauri::WebviewWindowBuilder::new(app, "wave", tauri::WebviewUrl::App("wave.html".into()))
-        .title("Island")
+        .title("RAD")
         .transparent(true)
         .decorations(false)
         .shadow(false)
@@ -941,7 +941,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let auto_item = auto.clone();
     TrayIconBuilder::with_id("island")
-        .tooltip("Island")
+        .tooltip("RAD — R4nge's Awesome Desktop")
         .icon(app.default_window_icon().cloned().expect("ícone"))
         .menu(&menu)
         .on_menu_event(move |app, ev| match ev.id().as_ref() {

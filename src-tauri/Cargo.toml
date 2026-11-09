@@ -1,7 +1,7 @@
 [package]
 name = "island"
 version = "0.5.0"
-description = "Dynamic Island para Windows"
+description = "RAD — R4nge's Awesome Desktop: Dynamic Island e barra de tarefas para Windows"
 edition = "2021"
 
 [build-dependencies]

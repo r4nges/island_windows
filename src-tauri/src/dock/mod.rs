@@ -259,7 +259,7 @@ fn start(app: &AppHandle, cfg: &Taskbar, marker: PathBuf) {
 
     let (ox, oy) = geo.origin();
     let built = WebviewWindowBuilder::new(app, "dock", WebviewUrl::App("dock.html".into()))
-        .title("Island Dock")
+        .title("RAD Dock")
         .transparent(true)
         .decorations(false)
         .always_on_top(true)

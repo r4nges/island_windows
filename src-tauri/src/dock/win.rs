@@ -1038,7 +1038,7 @@ fn shell_thread(
         let Ok(helper) = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             helper_cls,
-            w!("Island Dock"),
+            w!("RAD Dock"),
             WS_POPUP,
             0,
             0,
