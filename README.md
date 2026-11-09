@@ -121,7 +121,7 @@ A chave privada fica em `~\.tauri\island.key` (com a senha em `island.key.passwo
 Abra `ui\index.html` no navegador: roda em modo demo com dados falsos.
 Teclas: `V` volume, `M` mudo, `K` Caps Lock, `L` brilho, `C` copiar, `B` carregador, `W` Wi-Fi, `N` próxima faixa, `P` pomodoro, `D` soltar arquivos, `E` expandir, `T` notificação, `U` atualização disponível, `S` configurações, `O` abrir (como o atalho global), `F` simula um app por baixo da ilha, `Espaço` play/pause.
 
-Parâmetros na URL: `?clean` esconde a dica; `?state=expanded&tab=<media|system|focus|clip|notif|shelf>&view=<cpu|ram|gpu|net|wifi|battery|clock|settings|user>` abre num estado fixo; `?seed` enche clipboard e estante; `?update` simula uma atualização pendente.
+Parâmetros na URL: `?clean` esconde a dica; `?state=expanded&tab=<media|system|focus|clip|notif|shelf>&view=<cpu|ram|gpu|net|wifi|battery|clock|settings|user>` abre num estado fixo; `?seed=1` enche clipboard e estante; `?update` simula uma atualização pendente.
 
 ## Onde mexer
 
@@ -147,6 +147,7 @@ Dica: para não ver o aviso duas vezes, desligue os *banners* do app em Configur
 - **VRAM por processo** não é informada pelo driver NVIDIA no Windows (modo WDDM), por isso aparece “—”.
 - GPU só NVIDIA (via NVML); sem placa NVIDIA o card mostra “—”.
 - **Brilho** só funciona na tela interna de notebook (a leitura é feita pelo WMI): monitores externos e desktops não mostram o HUD de brilho.
+- **Aviso de brilho do Windows**: continua aparecendo junto do HUD de brilho da ilha (só o aviso de volume é escondido).
 - **Aviso de volume do Windows**: o Island o esconde enquanto mostra o próprio HUD de volume, mas isso depende de detalhes internos e não documentados do shell do Windows (testado no Windows 11 build 26300). Uma atualização do Windows pode quebrar o truque; nesse caso o aviso nativo simplesmente volta a aparecer junto do HUD. Também pode piscar por um quadro antes de sumir. Dá para desligar em Configurações → Esconder o aviso de volume do Windows.
 
 ## Consumo

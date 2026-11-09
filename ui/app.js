@@ -211,10 +211,10 @@
   }
   const panel = () => (S.drag ? "shelf" : S.view ? (["cpu", "ram", "gpu", "net"].includes(S.view) ? "detail" : S.view) : S.tab);
 
-  let hudBlockedSent = false;
+  let hudBlockedSent = null; // null: o primeiro sync (inclusive após "Recarregar visual") sempre chega ao Rust
   function render() {
     // o Rust só esconde o aviso de volume do Windows quando o HUD da ilha aparece
-    if (hudBlocked() !== hudBlockedSent) { hudBlockedSent = !hudBlockedSent; fire("set_hud_blocked", { blocked: hudBlockedSent }); }
+    if (hudBlocked() !== hudBlockedSent) { hudBlockedSent = hudBlocked(); fire("set_hud_blocked", { blocked: hudBlockedSent }); }
     const m = computeMode();
     const [w, h, r] = targetSize(m);
     const key = `${m}:${w}x${h}`;
@@ -1206,8 +1206,8 @@
     return `<div class="seg" data-seg="${key}" style="--n:${opts.length}"><span class="thumb" style="transform:translateX(${i * 100}%)"></span>${opts
       .map(([v, l], j) => `<button data-v="${v}" class="${j === i ? "on" : ""}">${l}</button>`).join("")}</div>`;
   };
-  const toggle = (key, label, onv) =>
-    `<button class="s-row" data-toggle="${key}"><span>${label}</span><span class="sw g ${onv ? "on" : ""}"></span></button>`;
+  const toggle = (key, label, onv, dis = false) =>
+    `<button class="s-row${dis ? " s-dis" : ""}" data-toggle="${key}"><span>${label}</span><span class="sw g ${onv ? "on" : ""}"></span></button>`;
 
   // \\.\DISPLAY2 -> "Tela 2"
   const monLabel = (m) => `Tela ${(m.id.match(/(\d+)\s*$/) || [, "?"])[1]} · ${m.width}×${m.height}`;
@@ -1316,7 +1316,7 @@
       ${SHORTCUTS.map(([k, l]) => shortcutRow(k, l, c.shortcuts?.[k] ?? "")).join("")}
       <div class="sec">Avisos na ilha</div>
       <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)
-        + (k === "volume" ? toggle("hide_volume_osd", "Esconder o aviso de volume do Windows", c.hide_volume_osd !== false) : "")).join("")}</div>
+        + (k === "volume" ? toggle("hide_volume_osd", "Esconder o aviso de volume do Windows", c.hide_volume_osd !== false, c.modules.volume === false) : "")).join("")}</div>
       <div class="sec">Notificações por app</div>
       ${appMuteList(c)}
       <div class="s-foot">${settingsFoot()}</div>`;
