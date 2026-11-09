@@ -62,6 +62,8 @@ jobs:
       - name: Gerar latest.json
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          # git escreve UTF-8; sem isso o pwsh decodifica pela code page OEM e as notas saem com mojibake
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
           $dir = "src-tauri/target/release/bundle/nsis"
           $ver = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $exe = Get-Item "$dir/*_x64-setup.exe"
