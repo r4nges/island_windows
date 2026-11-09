@@ -42,6 +42,12 @@ struct Shared {
     /// a página não mostraria o HUD agora (mouse em cima, fixada, arrastando
     /// arquivo, app por baixo): mesmo teste do `hud()` do frontend
     hud_blocked: AtomicBool,
+    /// mouse em cima da pílula (o `spawn_fast` atualiza)
+    hover: AtomicBool,
+    /// app cobrindo a ilha (o `spawn_fast` atualiza)
+    covered: AtomicBool,
+    /// o callback de volume mudou o volume/mudo: o `spawn_fast` emite
+    vol_dirty: AtomicBool,
     /// última mudança de volume que vira HUD na ilha
     osd_at: Mutex<Option<Instant>>,
     /// thread que esconde o aviso do Windows (dorme até `wake_osd`)
@@ -328,10 +334,11 @@ fn place_top_center(win: &WebviewWindow, shared: &Shared) {
     }
 }
 
-/// ~30 Hz: hover/click-through, volume, Caps Lock, clipboard, tela cheia.
-fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
+/// ~30 Hz: hover/click-through, volume (vindo do callback), Caps Lock,
+/// clipboard, tela cheia.
+fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>, vol: platform::Volume) {
     thread::spawn(move || {
-        let mut fast = platform::Fast::new();
+        let fast = platform::Fast::new();
         let mut inside_last = false;
         let mut last_fast: Option<(i32, bool, bool)> = None;
         let mut clip_seq = fast.clipboard_seq();
@@ -360,33 +367,23 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
             };
             if inside != inside_last {
                 inside_last = inside;
+                shared.hover.store(inside, Ordering::Relaxed);
                 let _ = win.set_ignore_cursor_events(!inside);
                 let _ = app.emit("island:hover", inside);
             }
 
-            // volume + caps a cada ~100 ms; a cada volta (~33 ms) quando o
-            // aviso do Windows é escondido, para ele sumir mais rápido
-            let hide_osd = shared.hide_osd.load(Ordering::Relaxed);
-            if tick % 3 == 0 || hide_osd {
-                let (vol, muted) = match fast.volume() {
+            // volume na volta seguinte ao callback do Core Audio; Caps Lock
+            // a cada ~100 ms
+            if shared.vol_dirty.swap(false, Ordering::Relaxed) || tick % 3 == 0 {
+                let (volume, muted) = match vol.get() {
                     Some((v, m)) => (Some(v), m),
                     None => (None, false),
                 };
                 let caps = fast.caps_lock();
-                let key = ((vol.unwrap_or(-1.0) * 100.0).round() as i32, muted, caps);
+                let key = ((volume.unwrap_or(-1.0) * 100.0).round() as i32, muted, caps);
                 if last_fast != Some(key) {
-                    // volume/mudo mudou e a ilha vai mostrar o HUD: esconde o
-                    // aviso do Windows (sem HUD, o do Windows fica)
-                    if last_fast.is_some_and(|(v, m, _)| (v, m) != (key.0, key.1))
-                        && hide_osd
-                        && !covered_last
-                        && !inside_last
-                        && !shared.hud_blocked.load(Ordering::Relaxed)
-                    {
-                        shared.wake_osd();
-                    }
                     last_fast = Some(key);
-                    let _ = app.emit("island:fast", Fast { volume: vol, muted, caps });
+                    let _ = app.emit("island:fast", Fast { volume, muted, caps });
                 }
             }
 
@@ -431,6 +428,7 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
                 }
                 if covered != covered_last {
                     covered_last = covered;
+                    shared.covered.store(covered, Ordering::Relaxed);
                     let _ = app.emit("island:covered", covered);
                 }
             }
@@ -450,8 +448,25 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
     });
 }
 
-/// Esconde o aviso de volume do próprio Windows. Dorme até o `spawn_fast`
-/// avisar (`Shared::wake_osd`) que o volume mudou com o HUD da ilha na tela;
+/// Volume pelo callback do Core Audio: marca para o `spawn_fast` emitir e, se
+/// alguém mexeu no volume com o HUD da ilha na tela, acorda na hora a thread
+/// que esconde o aviso do Windows (sem HUD, o do Windows fica).
+fn start_volume(shared: Arc<Shared>) -> platform::Volume {
+    platform::Volume::start(move |key| {
+        if key
+            && shared.hide_osd.load(Ordering::Relaxed)
+            && !shared.covered.load(Ordering::Relaxed)
+            && !shared.hover.load(Ordering::Relaxed)
+            && !shared.hud_blocked.load(Ordering::Relaxed)
+        {
+            shared.wake_osd();
+        }
+        shared.vol_dirty.store(true, Ordering::Relaxed);
+    })
+}
+
+/// Esconde o aviso de volume do próprio Windows. Dorme até o callback de
+/// volume avisar (`Shared::wake_osd`) que o volume mudou com o HUD da ilha na tela;
 /// aí, por ~400 ms, esconde a janela do aviso assim que o Explorer a mostra
 /// (ele a mostra de novo a cada tecla). Ociosa não acorda nunca. Com a opção
 /// desligada (ou ao sair) ninguém a acorda e o Windows volta a mostrar o aviso
@@ -732,7 +747,8 @@ fn main() {
             platform::autostart_quote_path();
             build_tray(app)?;
             spawn_volume_osd(shared.clone());
-            spawn_fast(app.handle().clone(), win, shared.clone());
+            let vol = start_volume(shared.clone());
+            spawn_fast(app.handle().clone(), win, shared.clone(), vol);
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());

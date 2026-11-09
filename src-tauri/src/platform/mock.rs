@@ -49,14 +49,23 @@ impl VolumeOsd {
     pub fn hide(&self) {}
 }
 
+#[derive(Clone)]
+pub struct Volume;
+
+impl Volume {
+    pub fn start(_on_change: impl Fn(bool) + Send + Sync + 'static) -> Self {
+        Volume
+    }
+    pub fn get(&self) -> Option<(f32, bool)> {
+        Some((0.5, false))
+    }
+}
+
 pub struct Fast;
 
 impl Fast {
     pub fn new() -> Self {
         Fast
-    }
-    pub fn volume(&mut self) -> Option<(f32, bool)> {
-        Some((0.5, false))
     }
     pub fn caps_lock(&self) -> bool {
         false

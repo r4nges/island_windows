@@ -3,6 +3,8 @@
 
 use super::{Battery, MediaInfo, Network, NotifInfo, PowerInfo, PowerPlan, WifiNet};
 use base64::Engine;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::Media::Control::{
@@ -13,8 +15,15 @@ use windows::Media::Control::{
 };
 use windows::Networking::Connectivity::{NetworkConnectivityLevel, NetworkInformation};
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamWithContentType};
-use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+use windows::Win32::Media::Audio::Endpoints::{
+    IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+};
+use windows::Win32::Media::Audio::{
+    eConsole, eRender, EDataFlow, AUDIO_VOLUME_NOTIFICATION_DATA, ERole, IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
+    MMDeviceEnumerator, DEVICE_STATE,
+};
+use windows::core::implement; // PCWSTR vem do `use` da seção Wi-Fi
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::core::BSTR;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoSetProxyBlanket, CLSCTX_ALL, COINIT_MULTITHREADED, EOAC_NONE,
@@ -225,40 +234,143 @@ impl VolumeOsd {
     }
 }
 
+// ------------------------------------------------- Volume (callback do Core Audio)
+
+/// Volume e mudo do dispositivo de saída padrão, avisados pelo Core Audio
+/// (`IAudioEndpointVolumeCallback`) em vez de lidos em loop. Uma thread
+/// própria registra o callback no dispositivo padrão e dorme; quando o padrão
+/// muda (fone, HDMI...), o `IMMNotificationClient` a acorda para registrar de
+/// novo. Parado, nada roda.
+#[derive(Clone)]
+pub struct Volume(Arc<VolState>);
+
+struct VolState {
+    /// última leitura (volume 0..1, mudo); `None` = sem dispositivo de saída
+    cur: Mutex<Option<(f32, bool)>>,
+    on_change: Box<dyn Fn(bool) + Send + Sync>,
+    /// o dispositivo padrão mudou: a thread registra o callback de novo
+    dev_changed: AtomicBool,
+    thread: OnceLock<std::thread::Thread>,
+}
+
+impl VolState {
+    /// Guarda a leitura e chama `on_change` se o volume (em %) ou o mudo mudou.
+    fn publish(&self, v: Option<(f32, bool)>, key: bool) {
+        let pct = |v: Option<(f32, bool)>| v.map(|(v, m)| ((v * 100.0).round() as i32, m));
+        let changed = {
+            let mut cur = self.cur.lock().unwrap();
+            let changed = pct(*cur) != pct(v);
+            *cur = v;
+            changed
+        };
+        if changed {
+            (self.on_change)(key);
+        }
+    }
+}
+
+#[implement(IAudioEndpointVolumeCallback)]
+struct VolCb(Arc<VolState>);
+
+impl IAudioEndpointVolumeCallback_Impl for VolCb_Impl {
+    fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
+        if let Some(d) = unsafe { data.as_ref() } {
+            self.0.publish(Some((d.fMasterVolume, d.bMuted.as_bool())), true);
+        }
+        Ok(())
+    }
+}
+
+#[implement(IMMNotificationClient)]
+struct DevCb(Arc<VolState>);
+
+impl IMMNotificationClient_Impl for DevCb_Impl {
+    fn OnDefaultDeviceChanged(&self, flow: EDataFlow, role: ERole, _id: &PCWSTR) -> windows::core::Result<()> {
+        // o Core Audio pede para não registrar nada daqui: só acorda a thread
+        if flow == eRender && role == eConsole {
+            self.0.dev_changed.store(true, Ordering::SeqCst);
+            if let Some(t) = self.0.thread.get() {
+                t.unpark();
+            }
+        }
+        Ok(())
+    }
+    fn OnDeviceStateChanged(&self, _id: &PCWSTR, _state: DEVICE_STATE) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnPropertyValueChanged(&self, _id: &PCWSTR, _key: &PROPERTYKEY) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+impl Volume {
+    /// Começa a acompanhar o volume. `on_change(tecla)` roda numa thread do
+    /// Core Audio quando o volume (em %) ou o mudo muda; `tecla` = aviso do
+    /// próprio Core Audio (alguém mexeu no volume), `false` = leitura ao
+    /// iniciar ou ao trocar de dispositivo.
+    pub fn start(on_change: impl Fn(bool) + Send + Sync + 'static) -> Self {
+        let st = Arc::new(VolState {
+            cur: Mutex::new(None),
+            on_change: Box::new(on_change),
+            dev_changed: AtomicBool::new(false),
+            thread: OnceLock::new(),
+        });
+        let s = st.clone();
+        std::thread::spawn(move || {
+            let _ = s.thread.set(std::thread::current());
+            init_thread();
+            let en: IMMDeviceEnumerator = loop {
+                match unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) } {
+                    Ok(en) => break en,
+                    Err(_) => std::thread::sleep(Duration::from_secs(5)),
+                }
+            };
+            let client: IMMNotificationClient = DevCb(s.clone()).into();
+            let _ = unsafe { en.RegisterEndpointNotificationCallback(&client) };
+            loop {
+                let cb: IAudioEndpointVolumeCallback = VolCb(s.clone()).into();
+                let ep = unsafe {
+                    en.GetDefaultAudioEndpoint(eRender, eConsole)
+                        .and_then(|d| d.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None))
+                }
+                .ok()
+                // registra antes de ler: uma mudança entre os dois não se perde
+                .filter(|ep| unsafe { ep.RegisterControlChangeNotify(&cb) }.is_ok());
+                let now = ep.as_ref().and_then(|ep| unsafe {
+                    Some((ep.GetMasterVolumeLevelScalar().ok()?, ep.GetMute().ok()?.as_bool()))
+                });
+                s.publish(now, false);
+                while !s.dev_changed.swap(false, Ordering::SeqCst) {
+                    std::thread::park();
+                }
+                if let Some(ep) = &ep {
+                    let _ = unsafe { ep.UnregisterControlChangeNotify(&cb) };
+                }
+            }
+        });
+        Volume(st)
+    }
+
+    /// (volume 0..1, mudo)
+    pub fn get(&self) -> Option<(f32, bool)> {
+        *self.0.cur.lock().unwrap()
+    }
+}
+
 // ------------------------------------------------- Leituras rápidas (~30 Hz)
 
-pub struct Fast {
-    ep: Option<IAudioEndpointVolume>,
-    ep_at: Instant,
-}
+pub struct Fast;
 
 impl Fast {
     pub fn new() -> Self {
         init_thread();
-        Self { ep: Self::endpoint(), ep_at: Instant::now() }
-    }
-
-    fn endpoint() -> Option<IAudioEndpointVolume> {
-        unsafe {
-            let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
-            let dev = en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
-            dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok()
-        }
-    }
-
-    /// (volume 0..1, mudo)
-    pub fn volume(&mut self) -> Option<(f32, bool)> {
-        // o dispositivo padrão pode mudar (fone, HDMI...)
-        if self.ep_at.elapsed() > Duration::from_secs(3) {
-            self.ep = Self::endpoint();
-            self.ep_at = Instant::now();
-        }
-        let ep = self.ep.as_ref()?;
-        unsafe {
-            let v = ep.GetMasterVolumeLevelScalar().ok()?;
-            let m = ep.GetMute().ok()?.as_bool();
-            Some((v, m))
-        }
+        Fast
     }
 
     pub fn caps_lock(&self) -> bool {

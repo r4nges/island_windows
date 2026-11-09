@@ -60,7 +60,7 @@ flowchart LR
     win[("APIs do Windows")]
     gh[("GitHub Releases<br/>latest.json")]
     cfg[("settings.json")]
-    threads["<b>Threads do Rust</b><br/>fast ~30 Hz: hover, volume, Caps Lock,<br/>clipboard, tela cheia<br/>media 700 ms · slow 1 s · brightness 250 ms<br/>notifs · volume_osd · shortcuts · update"]
+    threads["<b>Threads do Rust</b><br/>fast ~30 Hz: hover, Caps Lock,<br/>clipboard, tela cheia<br/>volume e brightness por evento<br/>media 700 ms · slow 1 s<br/>notifs · volume_osd · shortcuts · update"]
     ui["<b>Frontend</b><br/>ui/app.js no WebView2"]
     cmds["<b>Comandos Tauri</b><br/>set_settings, media_cmd, power_action…"]
 
