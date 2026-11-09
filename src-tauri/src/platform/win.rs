@@ -154,6 +154,76 @@ pub fn media_command(cmd: &str) {
     }
 }
 
+// ------------------------------------------------- Aviso de volume do Windows
+
+/// Janela do aviso de volume (e de brilho) do Windows 11: do Explorer, classe
+/// `XamlExplorerHostIslandWindow`, sem título, sempre no topo e sem ativação.
+/// Ela fica numa "banda" do shell (não aparece no `EnumWindows`), mas o
+/// `FindWindowExW` acha. O Explorer reaproveita a mesma janela e a mostra de
+/// novo a cada tecla de volume, então escondê-la não deixa nada para trás:
+/// sem ninguém escondendo, o aviso volta a aparecer na próxima tecla.
+pub struct VolumeOsd {
+    hwnd: isize,
+    found_at: Option<Instant>,
+}
+
+impl VolumeOsd {
+    pub fn new() -> Self {
+        Self { hwnd: 0, found_at: None }
+    }
+
+    fn hwnd(&self) -> windows::Win32::Foundation::HWND {
+        windows::Win32::Foundation::HWND(self.hwnd as *mut _)
+    }
+
+    fn find() -> isize {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowExW, GetWindowLongW, GetWindowTextLengthW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
+        };
+        let want = (WS_EX_TOPMOST | WS_EX_NOACTIVATE).0;
+        let mut after = None;
+        unsafe {
+            // a mesma classe serve o Alt+Tab (com título e sem WS_EX_NOACTIVATE)
+            while let Ok(h) = FindWindowExW(None, after, windows::core::w!("XamlExplorerHostIslandWindow"), None) {
+                let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+                if GetWindowTextLengthW(h) == 0 && ex & want == want {
+                    return h.0 as isize;
+                }
+                after = Some(h);
+            }
+        }
+        0
+    }
+
+    /// O aviso está na tela? Procura a janela de novo se ela sumiu (Explorer
+    /// reiniciado), no máximo a cada 2 s.
+    pub fn visible(&mut self) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
+        let alive = self.hwnd != 0 && unsafe { IsWindow(Some(self.hwnd())).as_bool() };
+        if !alive {
+            if self.found_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+                return false;
+            }
+            self.hwnd = Self::find();
+            self.found_at = Some(Instant::now());
+            if self.hwnd == 0 {
+                return false;
+            }
+        }
+        unsafe { IsWindowVisible(self.hwnd()).as_bool() }
+    }
+
+    /// Esconde sem esperar o Explorer responder (a janela é de outro processo).
+    pub fn hide(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindowAsync, SW_HIDE};
+        if self.hwnd != 0 {
+            unsafe {
+                let _ = ShowWindowAsync(self.hwnd(), SW_HIDE);
+            }
+        }
+    }
+}
+
 // ------------------------------------------------- Leituras rápidas (~30 Hz)
 
 pub struct Fast {

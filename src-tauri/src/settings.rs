@@ -89,6 +89,8 @@ pub struct Settings {
     /// app cobrindo a ilha (tela cheia ou janela maximizada por baixo dela):
     /// "hide" (some) | "peek" (fica um traço no topo)
     pub fullscreen: String,
+    /// esconde o aviso de volume do próprio Windows (só com o aviso `volume` ligado)
+    pub hide_volume_osd: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +103,7 @@ impl Default for Settings {
             shortcuts: Shortcuts::default(),
             muted_apps: Vec::new(),
             fullscreen: "hide".into(),
+            hide_volume_osd: true,
         }
     }
 }

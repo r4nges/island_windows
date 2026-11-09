@@ -36,6 +36,19 @@ impl Media {
 
 pub fn media_command(_cmd: &str) {}
 
+/// Aviso de volume do sistema: não existe fora do Windows.
+pub struct VolumeOsd;
+
+impl VolumeOsd {
+    pub fn new() -> Self {
+        VolumeOsd
+    }
+    pub fn visible(&mut self) -> bool {
+        false
+    }
+    pub fn hide(&self) {}
+}
+
 pub struct Fast;
 
 impl Fast {

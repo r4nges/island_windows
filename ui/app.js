@@ -113,6 +113,7 @@
     shortcuts: { open: "Ctrl+Alt+KeyI", play: "Ctrl+Alt+Space", pomo: "Ctrl+Alt+KeyP" },
     muted_apps: [],
     fullscreen: "hide",
+    hide_volume_osd: true,
   };
   const cfg = () => S.cfg || DEFAULT_CFG;
   /** aviso ligado nas configurações? */
@@ -1295,7 +1296,8 @@
       <div class="sec">Atalhos</div>
       ${SHORTCUTS.map(([k, l]) => shortcutRow(k, l, c.shortcuts?.[k] ?? "")).join("")}
       <div class="sec">Avisos na ilha</div>
-      <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)).join("")}</div>
+      <div class="s-grid">${MODULE_LABELS.map(([k, l]) => toggle("modules." + k, l, c.modules[k] !== false)
+        + (k === "volume" ? toggle("hide_volume_osd", "Esconder o aviso de volume do Windows", c.hide_volume_osd !== false) : "")).join("")}</div>
       <div class="sec">Notificações por app</div>
       ${appMuteList(c)}
       <div class="s-foot"><span>Island ${esc(appVersion)}</span><button class="pillbtn sm js-check-upd">${I.refresh} Procurar atualizações</button></div>`;
@@ -1324,7 +1326,7 @@
     const t = e.target.closest("[data-toggle]");
     if (t) {
       const [a, b] = t.dataset.toggle.split(".");
-      return setCfg(t.dataset.toggle, !cfg()[a][b]);
+      return setCfg(t.dataset.toggle, !(b ? cfg()[a][b] : cfg()[a] !== false));
     }
     const sw = e.target.closest("[data-color]");
     if (sw) {

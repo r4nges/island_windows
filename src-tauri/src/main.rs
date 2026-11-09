@@ -7,7 +7,7 @@ mod sys;
 mod update;
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,6 +37,8 @@ struct Shared {
     zoom: Mutex<f64>,
     /// monitor escolhido nas configurações (`None` = principal)
     monitor: Mutex<Option<String>>,
+    /// esconder o aviso de volume do Windows (`hide_volume_osd` com o aviso `volume` ligado)
+    hide_osd: AtomicBool,
 }
 
 impl Shared {
@@ -203,6 +205,7 @@ fn set_settings(
     let old = state.cur.lock().unwrap().clone();
     settings::save(&state.file, &s).map_err(|e| e.to_string())?;
     *state.cur.lock().unwrap() = s.clone();
+    shared.hide_osd.store(s.hide_volume_osd && s.modules.volume, Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         if old.monitor != s.monitor {
             *shared.monitor.lock().unwrap() = s.monitor.clone();
@@ -414,6 +417,46 @@ fn spawn_fast(app: AppHandle, win: WebviewWindow, shared: Arc<Shared>) {
     });
 }
 
+/// Esconde o aviso de volume do próprio Windows enquanto `Shared::hide_osd`
+/// estiver ligado. O Explorer mostra a janela do aviso a cada tecla de volume;
+/// aqui ela é escondida assim que aparece (~10 ms), mas só se o volume acabou
+/// de mudar: a mesma janela serve o aviso de brilho, que continua aparecendo.
+/// Desligada a opção (ou ao sair), nada mais é escondido e o Windows volta a
+/// mostrar o aviso na próxima tecla.
+fn spawn_volume_osd(shared: Arc<Shared>) {
+    thread::spawn(move || {
+        let mut fast = platform::Fast::new();
+        let mut osd = platform::VolumeOsd::new();
+        let mut last: Option<(f32, bool)> = None;
+        let mut changed_at: Option<Instant> = None;
+        let mut tick: u64 = 0;
+        loop {
+            if !shared.hide_osd.load(Ordering::Relaxed) {
+                last = None;
+                changed_at = None;
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            tick += 1;
+            let visible = osd.visible();
+            // volume a cada ~100 ms; com o aviso na tela, a cada volta
+            if visible || tick % 10 == 0 {
+                let now = fast.volume();
+                if now != last {
+                    if last.is_some() {
+                        changed_at = Some(Instant::now());
+                    }
+                    last = now;
+                }
+            }
+            if visible && changed_at.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) {
+                osd.hide();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+}
+
 /// Mídia: consulta a cada 700 ms, emite só quando muda.
 fn spawn_media(app: AppHandle) {
     thread::spawn(move || {
@@ -612,6 +655,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn main() {
     let shared = Arc::new(Shared::default());
+    let on_exit = shared.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
@@ -632,6 +676,7 @@ fn main() {
             let file = settings::path(&app.path().app_config_dir()?);
             let prefs = settings::load(&file);
             *shared.monitor.lock().unwrap() = prefs.monitor.clone();
+            shared.hide_osd.store(prefs.hide_volume_osd && prefs.modules.volume, Ordering::Relaxed);
             apply_scale(&win, &shared, prefs.scale);
             shortcuts::apply(app.handle(), &prefs.shortcuts);
             app.manage(SettingsState { cur: Mutex::new(prefs), file });
@@ -658,6 +703,7 @@ fn main() {
             autostart_first_run(app); // antes da bandeja, para o check já vir marcado
             build_tray(app)?;
             spawn_fast(app.handle().clone(), win, shared.clone());
+            spawn_volume_osd(shared.clone());
             spawn_media(app.handle().clone());
             spawn_slow(app.handle().clone(), shared.clone());
             spawn_notifs(app.handle().clone());
@@ -665,6 +711,12 @@ fn main() {
             update::spawn(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("erro ao iniciar o Island");
+        .build(tauri::generate_context!())
+        .expect("erro ao iniciar o Island")
+        .run(move |_, ev| {
+            // ao sair: para de esconder o aviso de volume do Windows
+            if let tauri::RunEvent::Exit = ev {
+                on_exit.hide_osd.store(false, Ordering::Relaxed);
+            }
+        });
 }
