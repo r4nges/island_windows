@@ -24,16 +24,24 @@
 //!
 //! Só a barra principal é escondida: as `Shell_SecondaryTrayWnd` dos outros
 //! monitores ficam (a dock só existe no principal).
+//!
+//! Com a dock ligada o RAD também tem uma janela `Shell_TrayWnd` (a bandeja
+//! própria, `tray.rs`): `tray()` pula as janelas do próprio processo.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use windows::core::w;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
-use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
 use windows::Win32::UI::Shell::{
-    SHAppBarMessage, ABE_BOTTOM, ABM_GETSTATE, ABM_GETTASKBARPOS, ABM_SETSTATE, ABS_AUTOHIDE, APPBARDATA,
+    SHAllocShared, SHAppBarMessage, SHFreeShared, SHLockShared, SHUnlockShared, ABE_BOTTOM, ABM_GETSTATE,
+    ABM_GETTASKBARPOS, ABM_SETSTATE, ABS_AUTOHIDE, APPBARDATA,
 };
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, ShowWindowAsync, SW_HIDE, SW_SHOWNA};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowExW, FindWindowW, GetWindowThreadProcessId, RegisterWindowMessageW, SendMessageTimeoutW, SendNotifyMessageW,
+    ShowWindow, ShowWindowAsync, HWND_BROADCAST, SMTO_ABORTIFHUNG, SW_HIDE, SW_SHOWNA, WM_COPYDATA,
+};
 
 /// Argumento que transforma o exe no processo vigia.
 pub const WATCHDOG_ARG: &str = "--taskbar-watchdog";
@@ -46,14 +54,141 @@ struct Marker {
     state: u32,
 }
 
-/// Janela da barra principal (muda quando o Explorer reinicia).
+/// Janela da barra principal do Explorer (muda quando ele reinicia). A
+/// `Shell_TrayWnd` da bandeja própria do RAD fica de fora.
 pub fn tray() -> Option<HWND> {
-    unsafe { FindWindowW(w!("Shell_TrayWnd"), None).ok() }
+    let me = unsafe { GetCurrentProcessId() };
+    let mut after: Option<HWND> = None;
+    loop {
+        let h = unsafe { FindWindowExW(None, after, w!("Shell_TrayWnd"), None) }.ok()?;
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        if pid != me {
+            return Some(h);
+        }
+        after = Some(h);
+    }
+}
+
+/// Difunde `TaskbarCreated`: todo app com ícone na bandeja o registra de novo
+/// na `Shell_TrayWnd` que o `FindWindow` achar (a do RAD ou a do Explorer).
+/// Assíncrono, não espera ninguém.
+pub fn broadcast_taskbar_created() {
+    unsafe {
+        let m = RegisterWindowMessageW(w!("TaskbarCreated"));
+        if m != 0 {
+            let _ = SendNotifyMessageW(HWND_BROADCAST, m, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// `SHAppBarMessage` para as chamadas do próprio RAD.
+///
+/// Com a bandeja própria ligada, o `SHAppBarMessage` acha a `Shell_TrayWnd`
+/// do RAD. Para outro processo isso não muda nada: o shell32 cria o bloco da
+/// resposta no processo da bandeja e o Explorer o abre pelo id do processo,
+/// que vem no pacote repassado. Mas, quando quem chama é o próprio processo da
+/// bandeja, o shell32 manda um ponteiro em vez do bloco, e o Explorer não tem
+/// como escrever a resposta (testado no Windows 11: `ABM_GETTASKBARPOS` voltava
+/// 0,0,0,0 e o `ABM_QUERYPOS` sem ajuste). Aí o RAD fala direto com a barra do
+/// Explorer, do jeito que o shell32 fala com uma bandeja de outro processo.
+pub fn appbar_msg(msg: u32, d: &mut APPBARDATA) -> usize {
+    if own_tray_first() {
+        if let Some(r) = appbar_direct(msg, d) {
+            return r;
+        }
+    }
+    unsafe { SHAppBarMessage(msg, d) }
+}
+
+/// A primeira `Shell_TrayWnd` do `FindWindow` é a bandeja do RAD?
+fn own_tray_first() -> bool {
+    unsafe {
+        let Ok(h) = FindWindowW(w!("Shell_TrayWnd"), None) else { return false };
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        pid == GetCurrentProcessId()
+    }
+}
+
+/// `APPBARDATA` como vai no pacote (handles em 32 bits, 40 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct AppBarData3264 {
+    cb_size: u32,
+    hwnd: u32,
+    cb: u32,
+    edge: u32,
+    rc: RECT,
+    lparam: i64,
+}
+
+/// Pacote `WM_COPYDATA` (dwData 0) do `SHAppBarMessage`, 64 bytes: os dados,
+/// a mensagem ABM_* e o bloco compartilhado onde o Explorer escreve a resposta.
+#[repr(C)]
+#[derive(Default)]
+struct AppBarMsg3264 {
+    abd: AppBarData3264,
+    msg: u32,
+    _pad: u32,
+    shared: u64,
+    pid: u32,
+    _pad2: u32,
+}
+
+fn appbar_direct(msg: u32, d: &mut APPBARDATA) -> Option<usize> {
+    let tray = tray()?;
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(tray, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let abd = AppBarData3264 {
+            cb_size: std::mem::size_of::<AppBarData3264>() as u32,
+            hwnd: d.hWnd.0 as isize as u32,
+            cb: d.uCallbackMessage,
+            edge: d.uEdge,
+            rc: d.rc,
+            lparam: d.lParam.0 as i64,
+        };
+        let size = std::mem::size_of::<AppBarData3264>() as u32;
+        // bloco da resposta já no processo do Explorer
+        let h = SHAllocShared(Some(&abd as *const _ as *const _), size, pid);
+        if h.is_invalid() {
+            return None;
+        }
+        let m = AppBarMsg3264 { abd, msg, shared: h.0 as usize as u64, pid, ..Default::default() };
+        let cds = COPYDATASTRUCT {
+            dwData: 0,
+            cbData: std::mem::size_of::<AppBarMsg3264>() as u32,
+            lpData: &m as *const _ as *mut _,
+        };
+        let mut res = 0usize;
+        let ok = SendMessageTimeoutW(
+            tray,
+            WM_COPYDATA,
+            WPARAM(d.hWnd.0 as usize),
+            LPARAM(&cds as *const _ as isize),
+            SMTO_ABORTIFHUNG,
+            5000,
+            Some(&mut res),
+        );
+        let p = SHLockShared(h, pid) as *const AppBarData3264;
+        if !p.is_null() {
+            let out = *p;
+            let _ = SHUnlockShared(p as *const _);
+            d.uEdge = out.edge;
+            d.rc = out.rc;
+        }
+        let _ = SHFreeShared(h, pid);
+        (ok.0 != 0).then_some(res)
+    }
 }
 
 fn appbar_state() -> u32 {
     let mut d = APPBARDATA { cbSize: std::mem::size_of::<APPBARDATA>() as u32, ..Default::default() };
-    unsafe { SHAppBarMessage(ABM_GETSTATE, &mut d) as u32 }
+    appbar_msg(ABM_GETSTATE, &mut d) as u32
 }
 
 fn set_appbar_state(state: u32) {
@@ -63,9 +198,7 @@ fn set_appbar_state(state: u32) {
         lParam: LPARAM(state as isize),
         ..Default::default()
     };
-    unsafe {
-        SHAppBarMessage(ABM_SETSTATE, &mut d);
-    }
+    appbar_msg(ABM_SETSTATE, &mut d);
 }
 
 fn read_marker(file: &Path) -> Option<Marker> {
@@ -98,7 +231,7 @@ pub fn bottom_reserve() -> i32 {
         return 0;
     }
     let mut d = APPBARDATA { cbSize: std::mem::size_of::<APPBARDATA>() as u32, ..Default::default() };
-    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut d) } == 0 || d.uEdge != ABE_BOTTOM {
+    if appbar_msg(ABM_GETTASKBARPOS, &mut d) == 0 || d.uEdge != ABE_BOTTOM {
         return 0;
     }
     (d.rc.bottom - d.rc.top).max(0)
@@ -207,7 +340,13 @@ pub fn watchdog_main() -> bool {
                 let _ = CloseHandle(h);
             }
         }
+        // arquivo ainda lá = o Island morreu com a dock ligada: além da barra,
+        // os ícones da bandeja voltam a se registrar direto no Explorer
+        let crashed = file.exists();
         restore_from(&file);
+        if crashed {
+            broadcast_taskbar_created();
+        }
     }
     true
 }

@@ -181,8 +181,12 @@
     // vidro nativo de quina reta (modo barra) quando o raio do CSS já passou
     // da metade dos 8 px: o canto nativo é tudo ou nada, troca no meio do morph
     const square = parseFloat(getComputedStyle(dock).borderTopLeftRadius) < 4;
-    const key = JSON.stringify([bar, hit, square]);
-    if (key !== lastSent) { lastSent = key; fire("dock_layout", { bar, hit, square }); }
+    // botão ⌃: a bandeja abre acima dele (e é a "posição" dos ícones dela)
+    const more = dock.querySelector(".more");
+    const mr = more && more.offsetParent ? more.getBoundingClientRect() : null;
+    const tray = mr ? { x: q(mr.left), y: q(mr.top), w: q(mr.width), h: q(mr.height) } : null;
+    const key = JSON.stringify([bar, hit, square, tray]);
+    if (key !== lastSent) { lastSent = key; fire("dock_layout", { bar, hit, square, tray }); }
     if (performance.now() < until) raf = requestAnimationFrame(measure);
   }
   window.addEventListener("resize", () => report(100));

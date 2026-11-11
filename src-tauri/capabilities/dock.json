@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dock",
-  "description": "Janela da barra de tarefas (dock): eventos e comandos do Island",
-  "windows": ["dock"],
+  "description": "Janelas da barra de tarefas (dock e bandeja): eventos e comandos do Island",
+  "windows": ["dock", "tray"],
   "permissions": ["core:default"]
 }

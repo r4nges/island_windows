@@ -1002,7 +1002,8 @@ fn main() {
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
             list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color,
             play_wave, wave_frame, wave_done,
-            dock::dock_init, dock::dock_layout, dock::dock_click, dock::dock_action, dock::dock_icon
+            dock::dock_init, dock::dock_layout, dock::dock_click, dock::dock_action, dock::dock_icon,
+            dock::tray_state, dock::tray_click, dock::tray_close
         ])
         .setup(move |app| {
             let win = app.get_webview_window("main").expect("janela main");

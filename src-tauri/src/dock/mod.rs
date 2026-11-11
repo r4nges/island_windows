@@ -14,7 +14,12 @@
 //! - thread `dock-shell` (`win.rs`): esconde a barra nativa, reserva a faixa
 //!   como AppBar, lista as janelas por evento, vidro desfocado por baixo da dock;
 //! - thread `dock-icons`: extrai os ícones reais (sob demanda, com cache);
-//! - processo vigia (`taskbar.rs`): devolve a barra nativa se o Island morrer.
+//! - processo vigia (`taskbar.rs`): devolve a barra nativa se o Island morrer;
+//! - bandeja própria (`tray.rs`, thread `dock-tray`): uma janela
+//!   `Shell_TrayWnd` escondida recebe os ícones da área de notificação (e
+//!   repassa tudo ao Explorer); o ⌃ da dock abre a janela `tray`
+//!   (`ui/tray.html`), de vidro, logo acima dele, com os ícones de verdade.
+//!   Fecha no segundo clique do ⌃, no Esc, ao clicar fora e ao perder o foco.
 //!
 //! Modo barra: com uma janela maximizada no monitor principal (`dock:max`,
 //! decidido em `win.rs`), a página estica a dock de ponta a ponta e a cola no
@@ -31,11 +36,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 #[cfg(windows)]
 mod taskbar;
+#[cfg(windows)]
+mod tray;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
@@ -68,6 +75,25 @@ pub struct ItemOut {
     pub open: usize,
     /// uma delas está em primeiro plano
     pub focus: bool,
+}
+
+/// Ícone da bandeja como a janela `tray` o vê.
+#[derive(Serialize, Clone, Debug)]
+pub struct TrayIconOut {
+    pub id: String,
+    pub tip: String,
+    /// data URL PNG (`None`: a página desenha a inicial da dica)
+    pub icon: Option<String>,
+}
+
+/// O que a janela da bandeja desenha.
+#[derive(Serialize, Clone, Debug)]
+pub struct TrayState {
+    /// "dark" | "light" | "clear" (o "system" já resolvido)
+    glass: String,
+    /// colunas da grade (a janela tem exatamente o tamanho dela)
+    cols: usize,
+    icons: Vec<TrayIconOut>,
 }
 
 /// Retângulo em px CSS relativo à janela da dock.
@@ -121,7 +147,31 @@ struct Run {
     geo: Geo,
     hover: Arc<Hover>,
     cfg: Taskbar,
+    /// bandeja própria (sem ela o ⌃ não abre nada)
+    tray: Option<sys::TrayHost>,
+    /// janela da bandeja (criada escondida junto com a dock)
+    flyout: Option<WebviewWindow>,
 }
+
+/// Janela da bandeja: aberta? e onde fica o ⌃ (px físicos da tela).
+struct Fly {
+    shown: bool,
+    hidden_at: Option<Instant>,
+    /// botão ⌃ (esq, topo, dir, base)
+    btn: Option<(i32, i32, i32, i32)>,
+    /// topo do vidro da dock: a bandeja abre acima dele
+    bar_top: Option<i32>,
+}
+
+static FLY: Mutex<Fly> = Mutex::new(Fly { shown: false, hidden_at: None, btn: None, bar_top: None });
+
+/// Grade da bandeja em px CSS (`ui/tray.css` usa os mesmos): célula, espaço
+/// interno, colunas no máximo, tamanho vazio ("Nenhum ícone") e distância da dock.
+const FLY_CELL: f64 = 36.0;
+const FLY_PAD: f64 = 6.0;
+const FLY_COLS: usize = 5;
+const FLY_EMPTY: (f64, f64) = (200.0, 44.0);
+const FLY_GAP: f64 = 8.0;
 
 struct State {
     app: Option<AppHandle>,
@@ -186,6 +236,9 @@ pub fn fullscreen(_app: &AppHandle, on: bool) {
     if let Some(p) = parts {
         set_shown(&p, !on);
     }
+    if on {
+        close_flyout();
+    }
 }
 
 /// Saída do Island: desfaz tudo na hora (a barra nativa volta) sem esperar
@@ -194,6 +247,10 @@ pub fn shutdown() {
     let run = STATE.lock().unwrap().run.take();
     if let Some(r) = run {
         r.hover.stop.store(true, Ordering::SeqCst);
+        // os ícones voltam a falar com o Explorer antes de a barra nativa voltar
+        if let Some(t) = r.tray {
+            t.stop();
+        }
         r.engine.stop();
     }
 }
@@ -311,7 +368,15 @@ fn start(app: &AppHandle, cfg: &Taskbar, marker: PathBuf) {
         _ => {}
     });
     spawn_hover(app.clone(), win.clone(), hover.clone());
-    let run = Run { win, engine, geo, hover, cfg: cfg.clone() };
+    let emit = app.clone();
+    let tray = sys::TrayHost::start(Box::new(move || {
+        // só incomoda a página com a bandeja aberta (ela relê ao abrir)
+        if FLY.lock().unwrap().shown {
+            let _ = emit.emit_to("tray", "tray:changed", ());
+        }
+    }));
+    let flyout = tray.as_ref().and_then(|_| build_flyout(app));
+    let run = Run { win, engine, geo, hover, cfg: cfg.clone(), tray, flyout };
     if FULLSCREEN.load(Ordering::SeqCst) {
         set_shown(&run.parts(), false);
     }
@@ -325,7 +390,14 @@ fn stop() {
         if let Some(t) = r.hover.thread.get() {
             t.unpark();
         }
-        // primeiro a barra nativa volta, depois a dock some
+        if let Some(f) = r.flyout {
+            let _ = f.destroy();
+        }
+        FLY.lock().unwrap().shown = false;
+        // os ícones voltam ao Explorer, depois a barra nativa volta, depois a dock some
+        if let Some(t) = r.tray {
+            t.stop();
+        }
         r.engine.stop();
         let _ = r.win.destroy();
     }
@@ -348,6 +420,9 @@ fn update(app: &AppHandle, cfg: &Taskbar, relayout: bool) {
     };
     if opts {
         let _ = app.emit_to("dock", "dock:cfg", cfg);
+    }
+    if !cfg.tray_button {
+        close_flyout();
     }
     // outro tamanho de ícone só muda a faixa reservada: a janela já tem a
     // largura do monitor e a altura do maior tamanho
@@ -425,15 +500,25 @@ pub async fn dock_init() -> DockInit {
 
 /// A página mediu a dock: `bar` = o vidro, `hit` = a área clicável (a dock e
 /// os ícones ampliados), em px CSS da janela; `square` = o vidro está de quina
-/// reta (modo barra, ou quase: o raio do CSS já passou da metade).
+/// reta (modo barra, ou quase: o raio do CSS já passou da metade); `tray` = o
+/// botão ⌃ (ausente se escondido), onde a bandeja abre.
 #[tauri::command]
-pub async fn dock_layout(bar: Rect, hit: Rect, square: Option<bool>) {
+pub async fn dock_layout(bar: Rect, hit: Rect, square: Option<bool>, tray: Option<Rect>) {
     let s = STATE.lock().unwrap();
     let Some(r) = &s.run else { return };
     *r.hover.hit.lock().unwrap() = Some(hit);
     let g = r.geo;
     let (ox, oy) = g.origin();
     let px = |v: f64| (v * g.scale).round() as i32;
+    let btn = tray
+        .filter(|t| t.w > 0.0 && t.h > 0.0)
+        .map(|t| (ox + px(t.x), oy + px(t.y), ox + px(t.x + t.w), oy + px(t.y + t.h)));
+    sys::set_tray_anchor(btn);
+    {
+        let mut f = FLY.lock().unwrap();
+        f.btn = btn;
+        f.bar_top = (bar.h > 0.0).then(|| oy + px(bar.y));
+    }
     // O desfoque cobre exatamente o vidro, sem recuo. O desfoque do DWM ignora
     // a região da janela (`SetWindowRgn`): os cantos só arredondam pelo canto
     // nativo do Windows 11, de 8 px (que escala com o DPI, como o px CSS). Por
@@ -459,7 +544,160 @@ pub async fn dock_click(key: String) {
 /// "start" | "search" | "tray" | "trash"
 #[tauri::command]
 pub async fn dock_action(kind: String) {
-    sys::action(&kind);
+    if kind == "tray" {
+        // mexe em janela: fora da thread do comando (ver `reconcile`)
+        let _ = std::thread::Builder::new().name("dock-tray-open".into()).spawn(toggle_flyout);
+    } else {
+        sys::action(&kind);
+    }
+}
+
+// ------------------------------------------------------------- bandeja
+
+fn build_flyout(app: &AppHandle) -> Option<WebviewWindow> {
+    let win = WebviewWindowBuilder::new(app, "tray", WebviewUrl::App("tray.html".into()))
+        .title("RAD Bandeja")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .visible(false)
+        .focused(false)
+        .inner_size(FLY_EMPTY.0, FLY_EMPTY.1)
+        .position(-32000.0, -32000.0)
+        .build()
+        .ok()?;
+    #[cfg(windows)]
+    if let Ok(h) = win.hwnd() {
+        sys::glass_window(h.0 as isize);
+    }
+    // clicou fora (ou o menu do app abriu): fecha
+    let w = win.clone();
+    win.on_window_event(move |ev| {
+        if let WindowEvent::Focused(false) = ev {
+            hide_flyout(&w);
+        }
+    });
+    Some(win)
+}
+
+/// A janela da bandeja, o monitor e o vidro resolvido ("system" vira o tema).
+fn flyout_parts() -> Option<(WebviewWindow, Geo, String)> {
+    let s = STATE.lock().unwrap();
+    let r = s.run.as_ref()?;
+    let glass = match r.cfg.glass.as_str() {
+        "system" if r.engine.h.light() => "light".to_string(),
+        "system" => "dark".to_string(),
+        g => g.to_string(),
+    };
+    Some((r.flyout.clone()?, r.geo, glass))
+}
+
+fn flyout_state(glass: String) -> TrayState {
+    let icons = sys::tray_icons();
+    TrayState { glass, cols: icons.len().clamp(1, FLY_COLS), icons }
+}
+
+/// Tamanho exato da grade, acima do ⌃ (centrada nele, sem sair do monitor).
+fn place_flyout(win: &WebviewWindow, g: Geo, n: usize) {
+    let (cw, ch) = if n == 0 {
+        FLY_EMPTY
+    } else {
+        let cols = n.clamp(1, FLY_COLS);
+        let rows = n.div_ceil(cols);
+        (cols as f64 * FLY_CELL + FLY_PAD * 2.0, rows as f64 * FLY_CELL + FLY_PAD * 2.0)
+    };
+    let px = |v: f64| (v * g.scale).round() as i32;
+    let (w, h, gap) = (px(cw), px(ch), px(FLY_GAP));
+    let (btn, bar_top) = {
+        let f = FLY.lock().unwrap();
+        (f.btn, f.bar_top)
+    };
+    let cx = btn.map(|b| (b.0 + b.2) / 2).unwrap_or(g.x + g.w - w / 2 - gap);
+    let top = bar_top.or(btn.map(|b| b.1)).unwrap_or(g.y + g.h - px(80.0));
+    let x = (cx - w / 2).min(g.x + g.w - w - gap).max(g.x + gap);
+    let y = (top - gap - h).max(g.y);
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+    let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
+}
+
+/// ⌃: abre, ou fecha se já está aberta.
+fn toggle_flyout() {
+    let Some((win, geo, glass)) = flyout_parts() else { return };
+    {
+        let f = FLY.lock().unwrap();
+        if f.shown {
+            drop(f);
+            hide_flyout(&win);
+            return;
+        }
+        // o clique no ⌃ que acabou de tirar o foco dela já a fechou: não reabre
+        if f.hidden_at.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) {
+            return;
+        }
+    }
+    let st = flyout_state(glass);
+    place_flyout(&win, geo, st.icons.len());
+    let _ = win.emit_to("tray", "tray:state", &st);
+    FLY.lock().unwrap().shown = true;
+    let _ = win.show();
+    // em primeiro plano: senão não perde o foco ao clicar fora, o Esc não
+    // chega e o menu dos apps não pode vir para a frente
+    #[cfg(windows)]
+    if let Ok(h) = win.hwnd() {
+        sys::focus_window(h.0 as isize);
+    }
+    #[cfg(not(windows))]
+    let _ = win.set_focus();
+}
+
+fn hide_flyout(win: &WebviewWindow) {
+    {
+        let mut f = FLY.lock().unwrap();
+        if !f.shown {
+            return;
+        }
+        f.shown = false;
+        f.hidden_at = Some(Instant::now());
+    }
+    let _ = win.hide();
+}
+
+fn close_flyout() {
+    if let Some((win, _, _)) = flyout_parts() {
+        hide_flyout(&win);
+    }
+}
+
+/// Estado da bandeja (a página pede ao carregar e a cada `tray:changed`).
+/// Aberta, a janela acompanha o número de ícones.
+#[tauri::command]
+pub async fn tray_state() -> Option<TrayState> {
+    let (win, geo, glass) = flyout_parts()?;
+    let st = flyout_state(glass);
+    if FLY.lock().unwrap().shown {
+        place_flyout(&win, geo, st.icons.len());
+    }
+    Some(st)
+}
+
+/// Clique num ícone: `how` = "left" | "right" | "double".
+#[tauri::command]
+pub async fn tray_click(id: String, how: String) {
+    sys::tray_click(&id, &how);
+    // duplo clique abre o app: a bandeja sai da frente (os outros cliques
+    // fecham sozinhos quando o app ou o menu dele pega o foco)
+    if how == "double" {
+        close_flyout();
+    }
+}
+
+/// Esc na página.
+#[tauri::command]
+pub async fn tray_close() {
+    close_flyout();
 }
 
 /// Ícone real do app (data URL PNG) ou da Lixeira (`key` = "trash").

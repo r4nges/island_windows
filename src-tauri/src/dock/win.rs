@@ -19,6 +19,7 @@
 
 use super::taskbar::{self, Hider};
 use super::ItemOut;
+pub use super::tray::{set_tray_anchor, tray_click, tray_icons, TrayHost};
 use base64::Engine as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -53,12 +54,12 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_B, VK_LWIN, VK_RETURN, VK_S,
+    VIRTUAL_KEY, VK_LWIN, VK_S,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::Shell::{
-    IShellItem2, IShellItemImageFactory, SHAppBarMessage, SHCreateItemFromIDList, SHCreateItemFromParsingName,
+    IShellItem2, IShellItemImageFactory, SHCreateItemFromIDList, SHCreateItemFromParsingName,
     ShellExecuteExW, ABE_BOTTOM, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_POSCHANGED, ABN_STATECHANGE, APPBARDATA,
     SEE_MASK_IDLIST, SHELLEXECUTEINFOW, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
     SIIGBF_ICONONLY,
@@ -653,6 +654,12 @@ unsafe extern "system" fn helper_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             LRESULT(0)
         }
         m if m != 0 && m == TASKBAR_CREATED.load(Ordering::SeqCst) => {
+            // a bandeja própria (`tray.rs`) também difunde TaskbarCreated: com
+            // a mesma barra do Explorer de antes, não foi reinício
+            let now = taskbar::tray().map(|t| t.0 as isize).unwrap_or(0);
+            if now != 0 && now == TRAY.load(Ordering::SeqCst) {
+                return LRESULT(0);
+            }
             // Explorer reiniciou: a barra nova nasce visível e a AppBar some
             if !with_state(|s| s.explorer_restarted()) {
                 let _ = PostMessageW(Some(h), msg, wp, lp);
@@ -675,7 +682,7 @@ unsafe extern "system" fn glass_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// Desfoque do que está atrás (o mesmo efeito do "Transparência" do Windows)
 /// por `SetWindowCompositionAttribute`, que não é documentada: sem ela a
 /// janela fica preta transparente e a dock mostra só a tinta do CSS.
-unsafe fn enable_blur(h: HWND) {
+pub(super) unsafe fn enable_blur(h: HWND) {
     #[repr(C)]
     struct AccentPolicy {
         state: u32,
@@ -929,33 +936,31 @@ impl State {
             uCallbackMessage: WM_APPBAR_CB,
             ..Default::default()
         };
-        unsafe {
-            let Some((l, t, r, b)) = want else {
-                if self.appbar_on {
-                    SHAppBarMessage(ABM_REMOVE, &mut d);
-                    self.appbar_on = false;
-                }
-                return;
-            };
-            // a barra nativa escondida ainda reserva a faixa dela: pede só o resto
-            let need = (b - t) - taskbar::bottom_reserve();
-            if need <= 0 {
-                if self.appbar_on {
-                    SHAppBarMessage(ABM_REMOVE, &mut d);
-                    self.appbar_on = false;
-                }
-                return;
+        let Some((l, t, r, b)) = want else {
+            if self.appbar_on {
+                taskbar::appbar_msg(ABM_REMOVE, &mut d);
+                self.appbar_on = false;
             }
-            if !self.appbar_on {
-                self.appbar_on = SHAppBarMessage(ABM_NEW, &mut d) != 0;
+            return;
+        };
+        // a barra nativa escondida ainda reserva a faixa dela: pede só o resto
+        let need = (b - t) - taskbar::bottom_reserve();
+        if need <= 0 {
+            if self.appbar_on {
+                taskbar::appbar_msg(ABM_REMOVE, &mut d);
+                self.appbar_on = false;
             }
-            d.uEdge = ABE_BOTTOM;
-            d.rc = RECT { left: l, top: b - need, right: r, bottom: b };
-            SHAppBarMessage(ABM_QUERYPOS, &mut d);
-            // o sistema sobe a faixa para cima da barra nativa: mantém a altura
-            d.rc.top = d.rc.bottom - need;
-            SHAppBarMessage(ABM_SETPOS, &mut d);
+            return;
         }
+        if !self.appbar_on {
+            self.appbar_on = taskbar::appbar_msg(ABM_NEW, &mut d) != 0;
+        }
+        d.uEdge = ABE_BOTTOM;
+        d.rc = RECT { left: l, top: b - need, right: r, bottom: b };
+        taskbar::appbar_msg(ABM_QUERYPOS, &mut d);
+        // o sistema sobe a faixa para cima da barra nativa: mantém a altura
+        d.rc.top = d.rc.bottom - need;
+        taskbar::appbar_msg(ABM_SETPOS, &mut d);
     }
 
     fn explorer_restarted(&mut self) {
@@ -1341,20 +1346,12 @@ fn shell_open(src: Src) {
     });
 }
 
-/// Iniciar (Win), Pesquisar (Win+S), ícones ocultos (Win+B e Enter, que
-/// funciona com a barra nativa escondida) e Lixeira.
+/// Iniciar (Win), Pesquisar (Win+S) e Lixeira. O ⌃ (ícones ocultos) abre a
+/// bandeja própria (`tray.rs`), não passa por aqui.
 pub fn action(kind: &str) {
     match kind {
         "start" => send_keys(&[(VK_LWIN, false), (VK_LWIN, true)]),
         "search" => send_keys(&[(VK_LWIN, false), (VK_S, false), (VK_S, true), (VK_LWIN, true)]),
-        "tray" => {
-            std::thread::spawn(|| {
-                send_keys(&[(VK_LWIN, false), (VK_B, false), (VK_B, true), (VK_LWIN, true)]);
-                // o foco precisa chegar ao botão ⌃ da barra antes do Enter
-                std::thread::sleep(Duration::from_millis(200));
-                send_keys(&[(VK_RETURN, false), (VK_RETURN, true)]);
-            });
-        }
         "trash" => shell_open(Src::Parse("shell:RecycleBinFolder".into())),
         _ => {}
     }
@@ -1430,6 +1427,22 @@ fn click(it: &Item) {
     activate(hwnd(target));
 }
 
+/// Põe uma janela do RAD em primeiro plano (a da bandeja, ao abrir: sem o
+/// foco ela não fecha ao clicar fora nem recebe o Esc).
+pub fn focus_window(h: isize) {
+    activate(hwnd(h));
+}
+
+/// Vidro da janela da bandeja: o mesmo desfoque da dock, com o canto nativo
+/// de 8 px do Windows 11 (o CSS usa o mesmo raio).
+pub fn glass_window(h: isize) {
+    unsafe {
+        enable_blur(hwnd(h));
+        let pref = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(hwnd(h), DWMWA_WINDOW_CORNER_PREFERENCE, &pref as *const _ as *const _, 4);
+    }
+}
+
 pub fn cursor() -> Option<(i32, i32)> {
     let mut p = POINT::default();
     unsafe { GetCursorPos(&mut p).ok()? };
@@ -1491,6 +1504,14 @@ unsafe fn image_png(src: &Src, px: i32) -> Option<String> {
 
 /// Pixels RGBA (alfa direto) de um HBITMAP de 32 bits do shell.
 unsafe fn hbitmap_rgba(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
+    let (w, h, mut px) = hbitmap_bgra(hbm)?;
+    bgra_to_rgba(&mut px);
+    Some((w, h, px))
+}
+
+/// Pixels BGRA crus de um HBITMAP, de cima para baixo, em 32 bits (bitmap de
+/// 1 bit, como a máscara de um ícone, vira preto e branco).
+pub(super) unsafe fn hbitmap_bgra(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     let mut bm = BITMAP::default();
     if GetObjectW(HGDIOBJ(hbm.0), std::mem::size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _)) == 0 {
         return None;
@@ -1518,7 +1539,6 @@ unsafe fn hbitmap_rgba(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u
     if n == 0 {
         return None;
     }
-    bgra_to_rgba(&mut px);
     Some((w as u32, h as u32, px))
 }
 
@@ -1540,7 +1560,7 @@ pub(crate) fn bgra_to_rgba(px: &mut [u8]) {
     }
 }
 
-fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, w, h);
