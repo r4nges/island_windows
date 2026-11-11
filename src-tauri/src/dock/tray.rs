@@ -190,14 +190,33 @@ fn wstr(b: &[u8]) -> String {
     String::from_utf16_lossy(&v)
 }
 
+/// Dono (processo) de uma janela; 0 se ela não existe mais.
+fn owner_pid(h: isize) -> u32 {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd(h), Some(&mut pid)) };
+    pid
+}
+
+/// Mensagem de retorno aceitável: só da faixa dos apps (`WM_USER`..`0xFFFF`,
+/// que inclui `WM_APP` e as registradas). Qualquer processo, até um de
+/// integridade baixa, consegue registrar ícone aqui (o filtro do WM_COPYDATA
+/// está aberto, como na bandeja do Explorer); sem esta trava, ele faria o RAD
+/// postar `WM_CLOSE`, teclas etc. na janela de outro app a cada clique.
+pub(crate) fn callback_ok(cb: u32) -> bool {
+    (0x0400..=0xFFFF).contains(&cb)
+}
+
 /// Aplica a mensagem à tabela e devolve o que responder ao app (`true` =
 /// aceito), como uma bandeja recém-criada responderia.
 fn apply(nim: u32, d: &Nid) -> (bool, bool) {
     let mut t = TABLE.lock().unwrap();
     let by_guid = d.flags & NIF_GUID != 0 && d.guid.is_some();
-    let idx = t.iter().position(|i| if by_guid { i.guid == d.guid } else { i.hwnd == d.hwnd && i.uid == d.uid });
+    // GUID só vale dentro do mesmo processo: um app não mexe no ícone de outro
+    let idx = t.iter().position(|i| {
+        if by_guid { i.guid == d.guid && owner_pid(i.hwnd) == owner_pid(d.hwnd) } else { i.hwnd == d.hwnd && i.uid == d.uid }
+    });
     let update = |i: &mut Icon| {
-        if d.flags & NIF_MESSAGE != 0 {
+        if d.flags & NIF_MESSAGE != 0 && callback_ok(d.cb) {
             i.cb = d.cb;
         }
         if d.flags & NIF_ICON != 0 {
@@ -548,7 +567,7 @@ pub fn tray_click(id: &str, how: &str) {
     let Ok(id) = id.parse::<u64>() else { return };
     let it = TABLE.lock().unwrap().iter().find(|i| i.id == id).map(|i| (i.hwnd, i.uid, i.cb, i.version));
     let Some((hw, uid, cb, ver)) = it else { return };
-    if cb == 0 {
+    if !callback_ok(cb) {
         return;
     }
     let h = hwnd(hw);
@@ -616,6 +635,17 @@ unsafe fn hicon_png(h: HICON) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn callback_so_na_faixa_dos_apps() {
+        assert!(!super::callback_ok(0));
+        assert!(!super::callback_ok(0x0010)); // WM_CLOSE
+        assert!(!super::callback_ok(0x0100)); // WM_KEYDOWN
+        assert!(super::callback_ok(0x0400)); // WM_USER
+        assert!(super::callback_ok(0x8001)); // WM_APP + 1
+        assert!(super::callback_ok(0xC123)); // registrada
+        assert!(!super::callback_ok(0x1_0000));
+    }
+
     use super::{makelong, parse_tray, system_icon, NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_TIP, TRAY_SIG};
     use windows::core::GUID;
 
