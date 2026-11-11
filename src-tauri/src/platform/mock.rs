@@ -36,6 +36,8 @@ impl Media {
 
 pub fn media_command(_cmd: &str) {}
 
+pub fn media_seek(_secs: f64) {}
+
 /// Aviso de volume do sistema: não existe fora do Windows.
 pub struct VolumeOsd;
 

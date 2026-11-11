@@ -278,8 +278,14 @@ circle { fill: none; stroke-linecap: round; }
 .m-progress { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 10.5px; color: var(--dim); }
 .m-progress span { width: 30px; }
 .m-progress span:last-child { text-align: right; }
-.m-progress .bar { flex: 1; height: 4px; }
+.m-progress .bar { height: 4px; transition: height .15s var(--ease); }
 .m-progress .fill { transition: width .5s linear; }
+/* área de clique maior que a barra fina; ao vivo (sem duração) não dá para pular */
+.m-progress .seek { flex: 1; padding: 6px 0; cursor: pointer; touch-action: none; }
+.m-progress .seek:hover .bar, .m-progress .seek.dragging .bar { height: 6px; }
+.m-progress .seek.dragging .fill { transition: none; }
+.m-progress .seek.live { cursor: default; }
+.m-progress .seek.live .bar { height: 4px; }
 .m-ctrl { display: flex; align-items: center; justify-content: center; gap: 18px; margin-top: 8px; }
 .btn { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; transition: transform .2s var(--ease), background .2s; }
 .btn svg { width: 18px; height: 18px; }

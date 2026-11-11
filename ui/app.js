@@ -484,6 +484,7 @@
     const s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="#111"/></linearGradient></defs><rect width="200" height="200" fill="url(#g)"/><g fill="none" stroke="#fff" stroke-opacity=".85" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(50 46) scale(4.2)"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></g></svg>`;
     return "data:image/svg+xml;base64," + btoa(s);
   }
+  let seekAt = null; // segundos sob o ponteiro enquanto arrasta a barra (ver seekEl)
   function mediaPos() {
     const m = S.media;
     if (!m) return 0;
@@ -503,11 +504,48 @@
   function renderProgress() {
     const m = S.media;
     if (!m) return;
+    $(".js-m-seek").classList.toggle("live", !m.duration);
+    if (seekAt !== null) return; // arrastando: quem desenha é o arraste
     const p = mediaPos();
     $(".js-m-pos").textContent = fmt(p);
     $(".js-m-dur").textContent = m.duration ? fmt(m.duration) : "ao vivo";
     $(".js-m-fill").style.width = m.duration ? (p / m.duration) * 100 + "%" : "100%";
   }
+
+  // pular na música: clique ou arraste na barra de progresso; o pulo só vai
+  // para o player ao soltar, e a posição local já anda dali (o player confirma
+  // no próximo island:media)
+  const seekEl = $(".js-m-seek");
+  function seekPreview(e) {
+    const m = S.media, r = seekEl.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / (r.width || 1)));
+    seekAt = f * m.duration;
+    $(".js-m-fill").style.width = f * 100 + "%";
+    $(".js-m-pos").textContent = fmt(seekAt);
+  }
+  seekEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !S.media || !S.media.duration) return;
+    e.preventDefault(); e.stopPropagation();
+    seekEl.setPointerCapture(e.pointerId);
+    seekEl.classList.add("dragging");
+    seekPreview(e);
+  });
+  seekEl.addEventListener("pointermove", (e) => { if (seekAt !== null && S.media) seekPreview(e); });
+  function seekEnd(e, commit) {
+    if (seekAt === null) return;
+    const secs = seekAt;
+    seekAt = null;
+    seekEl.classList.remove("dragging");
+    if (seekEl.hasPointerCapture(e.pointerId)) seekEl.releasePointerCapture(e.pointerId);
+    if (commit && S.media) {
+      S.media.position = secs; S.media.updated_ms = Date.now();
+      fire("media_seek", { secs });
+    }
+    renderProgress();
+  }
+  seekEl.addEventListener("pointerup", (e) => seekEnd(e, true));
+  seekEl.addEventListener("pointercancel", (e) => seekEnd(e, false));
+  seekEl.addEventListener("click", (e) => e.stopPropagation());
   setInterval(() => { if (mode === "expanded" && panel() === "media") renderProgress(); }, 500);
 
   function setArt(url, real) {

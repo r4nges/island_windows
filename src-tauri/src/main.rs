@@ -123,6 +123,12 @@ fn media_cmd(cmd: String) {
     thread::spawn(move || platform::media_command(&cmd));
 }
 
+/// Pula a música para `secs` segundos (clique ou arraste na barra de progresso).
+#[tauri::command]
+fn media_seek(secs: f64) {
+    thread::spawn(move || platform::media_seek(secs));
+}
+
 #[tauri::command]
 fn copy_text(state: tauri::State<'_, Arc<Shared>>, text: String) -> Result<(), String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
@@ -991,7 +997,7 @@ fn main() {
         .manage(update::Updates::default())
         .manage(shortcuts::Bindings::default())
         .invoke_handler(tauri::generate_handler![
-            set_hit_rect, set_hud_blocked, media_cmd, copy_text, open_path, set_detail, wifi_list, wifi_connect,
+            set_hit_rect, set_hud_blocked, media_cmd, media_seek, copy_text, open_path, set_detail, wifi_list, wifi_connect,
             power_info, set_power_plan, set_power_mode, open_uri, enable_notifications,
             update::pending_update, update::install_update, check_update, get_settings, set_settings,
             list_monitors, pause_shortcuts, shortcuts::shortcut_errors, user_info, power_action, accent_color,

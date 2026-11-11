@@ -164,6 +164,18 @@ pub fn media_command(cmd: &str) {
     }
 }
 
+/// Muda a posição da música atual para `secs` segundos. O player decide se
+/// aceita (alguns, como transmissões ao vivo, não deixam pular).
+pub fn media_seek(secs: f64) {
+    init_thread();
+    let Some(mgr) = Manager::RequestAsync().ok().and_then(|o| o.join().ok()) else { return };
+    let Ok(s) = mgr.GetCurrentSession() else { return };
+    // TimeSpan do WinRT: unidades de 100 ns
+    if let Ok(op) = s.TryChangePlaybackPositionAsync((secs.max(0.0) * 1e7) as i64) {
+        let _ = op.join();
+    }
+}
+
 // ------------------------------------------------- Aviso de volume do Windows
 
 /// Janela do aviso de volume (e de brilho) do Windows 11: do Explorer, classe
