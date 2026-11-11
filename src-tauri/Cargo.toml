@@ -1,6 +1,6 @@
 [package]
 name = "island"
-version = "0.5.0"
+version = "0.6.0"
 description = "RAD — R4nge's Awesome Desktop: Dynamic Island e barra de tarefas para Windows"
 edition = "2021"
 
